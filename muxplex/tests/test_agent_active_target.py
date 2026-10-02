@@ -86,11 +86,9 @@ def _stub_resolution(monkeypatch, source: str = "file") -> None:
     """Pin ``resolve_status`` so these tests exercise the ``active`` block
     without needing the optional ``agent`` extra installed.
 
-    Credential RESOLUTION is already covered end-to-end in
-    test_agent_credential_embedded.py (behind ``needs_amplifier_agent_cli``);
-    duplicating that here would only mean these assertions skip on the
-    same environments, and the active-provider/model contract holds
-    regardless of whether a key happens to resolve.
+    Credential resolution is covered without SDK-dependent skips in
+    test_agent_credential_embedded.py. The active-provider/model contract
+    holds regardless of whether a key happens to resolve.
     """
     monkeypatch.setattr(
         agent_embedded_credentials,

@@ -6,29 +6,34 @@ failure checks. No test requires a live provider or dependency activation.
 
 from __future__ import annotations
 
+import importlib
+import inspect
+import json
 import subprocess
+import sys
+from importlib import metadata
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _pin_above_agent_python_floor(monkeypatch):
-    """Pin `_agent_python_supported()` True for every test in this file.
+def _forbid_real_subprocesses(monkeypatch):
+    """Every subprocess path must be explicitly replaced by a test double."""
 
-    This file exercises `ensure_agent()`'s install/fail-loud/retry
-    machinery, all of which lives behind the `_agent_python_supported()`
-    gate added for muxplex-x60: on an interpreter below the amplifier-agent
-    floor (real Python 3.11, itself a fully-supported muxplex interpreter --
-    see `pyproject.toml`'s `requires-python`), `ensure_agent()` prints the
-    upgrade-floor message and returns True *before* ever calling
-    `_get_install_info`/`_find_uv`/`subprocess.run` -- so on a bare 3.11
-    run every test below that expects those calls to happen sees an empty
-    command list or an unreached code path instead. That short-circuit is
-    correct runtime behavior and is already covered on its own terms by
-    `test_agent_python_floor.py`; it is simply not what THIS file is
-    testing. Pinning the predicate here makes every test in this file
-    deterministically exercise the above-floor path regardless of which
-    interpreter actually runs the suite.
+    def fail(*args, **kwargs):
+        raise AssertionError("test must mock subprocess.run; no real processes allowed")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+
+
+@pytest.fixture(autouse=True)
+def _pin_above_agent_python_floor(monkeypatch):
+    """Unit tests exercise the install path even on base-only Python 3.11.
+
+    The real installed-surface test independently skips only below 3.12.
+    Floor behavior itself is covered in test_agent_python_floor.py.
     """
     import muxplex.cli as cli_mod
 
@@ -95,7 +100,9 @@ def test_ensure_agent_fast_noop_when_public_surface_ready(monkeypatch, capsys):
     monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: ("0.20.0", None))
 
     def fail(*a, **k):
-        raise AssertionError("must not install/probe in a subprocess when already ready")
+        raise AssertionError(
+            "must not install/probe in a subprocess when already ready"
+        )
 
     monkeypatch.setattr(subprocess, "run", fail)
     monkeypatch.setattr(cli_mod, "_get_install_info", fail)
@@ -142,10 +149,9 @@ def test_ensure_agent_reinstalls_on_version_mismatch(
     cli_mod = public_surface_ready
 
     monkeypatch.setattr(
-        cli_mod, "_declared_dependency_pin", lambda dep, dist_name="muxplex": "0.13.0"
+        cli_mod, "_declared_dependency_pin", lambda dep, dist_name="muxplex": "0.20.0"
     )
-    probes = iter([("0.12.0", None), ("0.13.0", None)])
-    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
+    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: ("0.19.0", None))
     monkeypatch.setattr(
         cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
     )
@@ -162,8 +168,10 @@ def test_ensure_agent_reinstalls_on_version_mismatch(
     assert cli_mod.ensure_agent() is True
     assert captured_cmd["cmd"] is not None
     assert (
-        "0.13.0 installed but muxplex pins" not in capsys.readouterr().out
-    )  # sanity: message order not asserted here
+        "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v0.20.0#subdirectory=packages/python"
+        in captured_cmd["cmd"]
+    )
+    assert "reinstalling v0.20.0" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -187,12 +195,6 @@ def test_ensure_agent_uses_bare_name_for_pypi_target(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    # First call is the pre-install fast-path check (must miss, or
-    # ensure_agent() short-circuits before ever building install_cmd);
-    # second call is the post-install verification.
-    probes = iter([(None, "not installed"), ("9.9.9", None)])
-    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
-
     assert cli_mod.ensure_agent() is True
     cmd = captured["cmd"]
     assert "muxplex" in cmd
@@ -216,12 +218,15 @@ def test_ensure_agent_preserves_git_target_never_switches_to_pypi(
     monkeypatch.setattr(
         cli_mod, "_declared_dependency_pin", lambda dep, dist_name="muxplex": "9.9.9"
     )
-    probes = iter([(None, "not installed"), ("9.9.9", None)])
-    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
+    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: (None, "not installed"))
 
     git_info = _git_info(ref=None)  # no ref recorded -> track default branch HEAD
     monkeypatch.setattr(
-        cli_mod, "_get_install_info", lambda dist_name="muxplex": git_info
+        cli_mod,
+        "_get_install_info",
+        lambda dist_name="muxplex": (
+            git_info if dist_name == "muxplex" else _pypi_info()
+        ),
     )
     monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
 
@@ -324,14 +329,29 @@ def test_ensure_agent_fails_loud_on_git_fetch_failure(
     assert "could not resolve host github.com" in out
 
 
+@pytest.mark.parametrize("changed_dist", ["muxplex", "tmux-kit"])
+@pytest.mark.parametrize("before_source", ["pypi", "git"])
 def test_ensure_agent_fails_loud_when_source_shape_changes(
-    agent_not_yet_installed, monkeypatch, capsys
+    agent_not_yet_installed, monkeypatch, capsys, changed_dist, before_source
 ):
     cli_mod = agent_not_yet_installed
-    infos = iter([_pypi_info(), _pypi_info(), _git_info()])
-    monkeypatch.setattr(
-        cli_mod, "_get_install_info", lambda dist_name="muxplex": next(infos)
-    )
+    reads = []
+
+    def install_info(dist_name="muxplex"):
+        reads.append(dist_name)
+        assert dist_name in ("muxplex", "tmux-kit")
+        source = before_source
+        if len(reads) > 2 and dist_name == changed_dist:
+            source = "git" if before_source == "pypi" else "pypi"
+        if source == "git":
+            return _git_info(f"https://example.invalid/{dist_name}", None)
+        return _pypi_info()
+
+    def fail(*args, **kwargs):
+        raise AssertionError("source drift must be rejected before the fresh SDK probe")
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", install_info)
+    monkeypatch.setattr(cli_mod, "_agent_import_probe_subprocess", fail)
     monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
     monkeypatch.setattr(
         subprocess,
@@ -343,6 +363,10 @@ def test_ensure_agent_fails_loud_when_source_shape_changes(
     out = capsys.readouterr().out
     assert "ERROR" in out
     assert "changed shape" in out
+    assert changed_dist in out
+    after_source = "git" if before_source == "pypi" else "pypi"
+    assert f"{before_source} -> {after_source}" in out
+    assert reads == ["muxplex", "tmux-kit", "muxplex", "tmux-kit"]
 
 
 def test_ensure_agent_fails_loud_when_still_not_importable_after_install(
@@ -374,345 +398,764 @@ def test_ensure_agent_fails_loud_when_still_not_importable_after_install(
 
 
 # ---------------------------------------------------------------------------
-# Provider (bundle) preparation -- the muxplex-fx2 gap this fix closes.
+# More installer defenses: source targets, force, and command construction.
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_agent_runs_post_install_after_fresh_install(
-    agent_not_yet_installed, monkeypatch, capsys
-):
-    """After a fresh amplifier-agent install, the bundle-prepare step must
-    run before ensure_agent() reports success -- lib-importable alone is
-    exactly the insufficient signal that shipped this bug."""
-    cli_mod = agent_not_yet_installed
-    monkeypatch.setattr(
-        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
-    )
-    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
-    )
-    probes = iter([(None, "not installed"), ("9.9.9", None)])
-    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
-
-    post_install_calls = []
-
-    def fake_post_install(uv_path):
-        post_install_calls.append(uv_path)
-        return True, ""
-
-    monkeypatch.setattr(cli_mod, "_run_agent_post_install", fake_post_install)
-    monkeypatch.setattr(
-        cli_mod,
-        "_agent_providers_importable_subprocess",
-        lambda providers=(): (True, ""),
-    )
-
-    assert cli_mod.ensure_agent() is True
-    assert post_install_calls == ["/usr/bin/uv"]
-    out = capsys.readouterr().out
-    assert "providers ready" in out
-
-
-def test_ensure_agent_fails_loud_when_post_install_itself_fails(
-    agent_not_yet_installed, monkeypatch, capsys
-):
-    cli_mod = agent_not_yet_installed
-    monkeypatch.setattr(
-        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
-    )
-    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
-    )
-    probes = iter([(None, "not installed"), ("9.9.9", None)])
-    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
-    monkeypatch.setattr(
-        cli_mod,
-        "_run_agent_post_install",
-        lambda uv_path: (False, "bundle preparation exited 1: boom"),
-    )
-
-    assert cli_mod.ensure_agent() is False
-    out = capsys.readouterr().out
-    assert "ERROR" in out
-    assert "bundle preparation exited 1: boom" in out
-
-
-def test_ensure_agent_fails_loud_when_providers_still_missing_after_post_install(
-    agent_not_yet_installed, monkeypatch, capsys
-):
-    """A 0 exit from bundle preparation is NOT proof every module actually
-    installed (activate_all() swallows per-module failures unless strict --
-    see _run_agent_post_install's docstring) -- ensure_agent() must never
-    trust that exit code alone and must re-verify the providers are
-    actually importable, even after exhausting its one retry."""
-    cli_mod = agent_not_yet_installed
-    monkeypatch.setattr(
-        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
-    )
-    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
-    )
-    probes = iter([(None, "not installed"), ("9.9.9", None)])
-    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
-    # bundle preparation "succeeds" (exit 0) on every attempt but the
-    # provider module is still never actually present -- persistently
-    # broken, not merely flaky, so the retry must not paper over it.
-    monkeypatch.setattr(cli_mod, "_run_agent_post_install", lambda uv_path: (True, ""))
-    monkeypatch.setattr(
-        cli_mod,
-        "_agent_providers_importable_subprocess",
-        lambda providers=(): (
-            False,
-            "anthropic (amplifier_module_provider_anthropic): No module named 'anthropic'",
+@pytest.mark.parametrize(
+    "mux_source, url, ref, expected_target",
+    [
+        ("pypi", None, None, "muxplex"),
+        (
+            "git",
+            "https://example.invalid/fork/muxplex",
+            None,
+            "git+https://example.invalid/fork/muxplex",
         ),
+        (
+            "git",
+            "https://example.invalid/fork/muxplex",
+            "v0.50.0",
+            "git+https://example.invalid/fork/muxplex@v0.50.0",
+        ),
+        ("local-dir", "file:///tmp/owned%20checkout", None, "/tmp/owned checkout"),
+        (
+            "archive",
+            "file:///tmp/owned%20wheel.whl",
+            None,
+            "file:///tmp/owned%20wheel.whl",
+        ),
+        (
+            "archive",
+            "https://example.invalid/muxplex.whl",
+            None,
+            "https://example.invalid/muxplex.whl",
+        ),
+    ],
+)
+@pytest.mark.parametrize("kit_source", ["pypi", "git"])
+def test_install_target_matrix_preserves_muxplex_and_kit_sources(
+    agent_not_yet_installed,
+    public_surface_ready,
+    monkeypatch,
+    mux_source,
+    url,
+    ref,
+    expected_target,
+    kit_source,
+):
+    """Exercise the real target/command/source-shape guards, mocking only reads."""
+    cli_mod = agent_not_yet_installed
+    mux_info = {**_pypi_info(), "source": mux_source, "url": url, "ref": ref}
+    kit_info = (
+        _git_info("https://example.invalid/tmux-kit", "v0.4.0")
+        if kit_source == "git"
+        else _pypi_info()
+    )
+    reads = []
+    calls = []
+
+    def install_info(dist_name="muxplex"):
+        reads.append(dist_name)
+        assert dist_name in ("muxplex", "tmux-kit")
+        return mux_info if dist_name == "muxplex" else kit_info
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", install_info)
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    # Ref classification is not this matrix's subject; no remote lookup.
+    monkeypatch.setattr(
+        cli_mod, "_git_ref_kind_and_target", lambda url, ref: ("commit", ref, None)
+    )
+    monkeypatch.setattr(
+        cli_mod.Path,
+        "exists",
+        lambda path: str(path) in ("/tmp/owned checkout", "/tmp/owned wheel.whl"),
     )
 
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        assert kwargs == {"capture_output": True, "text": True}
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert cli_mod.ensure_agent() is True
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[:7] == [
+        "/usr/bin/uv",
+        "tool",
+        "install",
+        "--reinstall",
+        "--refresh",
+        "--force",
+        expected_target,
+    ]
+    sdk = (
+        "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent"
+        "@v9.9.9#subdirectory=packages/python"
+    )
+    requirements = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--with"]
+    expected_requirements = [sdk]
+    if kit_source == "git" and mux_source != "git":
+        expected_requirements.append(
+            "tmux-kit @ git+https://example.invalid/tmux-kit@v0.4.0"
+        )
+    assert requirements == expected_requirements
+    assert len(cmd) == 7 + 2 * len(expected_requirements)
+    assert cli_mod._target_matches_source(mux_info, expected_target) is True
+    assert reads == ["muxplex", "tmux-kit", "muxplex", "tmux-kit"]
+
+
+def test_force_reinstalls_even_when_public_surface_already_ready(
+    public_surface_ready, monkeypatch
+):
+    cli_mod = public_surface_ready
+    monkeypatch.setattr(cli_mod, "_agent_target_pin", lambda: "0.20.0")
+    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: ("0.20.0", None))
+    monkeypatch.setattr(
+        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert cli_mod.ensure_agent(force=True) is True
+    assert len(calls) == 1
+    assert calls[0][1:6] == ["tool", "install", "--reinstall", "--refresh", "--force"]
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_editable_refusal_happens_before_uv_lookup(
+    agent_not_yet_installed, monkeypatch, force
+):
+    cli_mod = agent_not_yet_installed
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda dist_name="muxplex": {**_pypi_info(), "source": "editable"},
+    )
+
+    def fail(*args, **kwargs):
+        raise AssertionError("never find an installer for an editable checkout")
+
+    monkeypatch.setattr(cli_mod, "_find_uv", fail)
+    assert cli_mod.ensure_agent(force=force) is False
+
+
+@pytest.mark.parametrize(
+    "source, url, detail",
+    [
+        ("unknown", None, "install source not recognized"),
+        ("not-installed", None, "install source not recognized"),
+        ("git", None, "no recorded remote URL"),
+        ("local-dir", "https://example.invalid/checkout", "no recorded path"),
+        (
+            "local-dir",
+            "file:///missing/checkout",
+            "original directory no longer exists",
+        ),
+        ("archive", "file:///missing/muxplex.whl", "original archive no longer exists"),
+    ],
+)
+def test_unusable_source_records_are_rejected_before_install(
+    agent_not_yet_installed, monkeypatch, capsys, source, url, detail
+):
+    cli_mod = agent_not_yet_installed
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda dist_name="muxplex": {**_pypi_info(), "source": source, "url": url},
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(cli_mod.Path, "exists", lambda path: False)
     assert cli_mod.ensure_agent() is False
     out = capsys.readouterr().out
     assert "ERROR" in out
-    assert "still not importable" in out
-    assert "amplifier_module_provider_anthropic" in out
-    assert "retrying" in out  # the retry was genuinely attempted
+    assert detail in out
 
 
-def test_ensure_agent_retries_once_on_transient_provider_flake(
-    agent_not_yet_installed, monkeypatch, capsys
+def test_corrupt_direct_url_metadata_never_installs(
+    agent_not_yet_installed, monkeypatch
 ):
-    """Real-world observed behavior (2026-08-17 spike): bundle preparation
-    activates ~20 modules concurrently, and a transient per-module failure
-    (network blip, resource contention) can leave a provider module not yet
-    importable after the first attempt even though nothing in the code
-    differs between runs. A second attempt succeeding must be reported as
-    SUCCESS, not a hard failure -- a retry exists precisely for this."""
+    """Current read helper fails loudly on invalid JSON; it must not fall back to PyPI."""
+    cli_mod = agent_not_yet_installed
+    dist = SimpleNamespace(
+        metadata={"Version": "0.50.0"}, read_text=lambda name: "{broken"
+    )
+    monkeypatch.setattr(metadata, "distribution", lambda dist_name: dist)
+    with pytest.raises(json.JSONDecodeError):
+        cli_mod.ensure_agent()
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_substituted_target_is_rejected_even_with_force(
+    agent_not_yet_installed, monkeypatch, capsys, force
+):
+    cli_mod = agent_not_yet_installed
+    monkeypatch.setattr(
+        cli_mod, "_get_install_info", lambda dist_name="muxplex": _git_info(ref=None)
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(cli_mod, "_upgrade_target", lambda info: ("muxplex", None))
+    assert cli_mod.ensure_agent(force=force) is False
+    assert (
+        "target does not match muxplex's recorded install source"
+        in capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize("missing", ["url", "ref"])
+def test_pypi_muxplex_refuses_incomplete_git_kit_override(
+    agent_not_yet_installed, monkeypatch, capsys, missing
+):
+    cli_mod = agent_not_yet_installed
+    kit = _git_info("https://example.invalid/tmux-kit", "v0.4.0")
+    kit[missing] = None
+    if missing == "ref":
+        kit["commit"] = None
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda dist_name="muxplex": _pypi_info() if dist_name == "muxplex" else kit,
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    assert cli_mod.ensure_agent() is False
+    assert (
+        "cannot preserve tmux-kit git source without URL/ref" in capsys.readouterr().out
+    )
+
+
+def test_pypi_muxplex_preserves_git_kit_commit_when_ref_absent(
+    agent_not_yet_installed, public_surface_ready, monkeypatch
+):
+    cli_mod = agent_not_yet_installed
+    kit = _git_info("https://example.invalid/tmux-kit", None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda dist_name="muxplex": _pypi_info() if dist_name == "muxplex" else kit,
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert cli_mod.ensure_agent() is True
+    assert "tmux-kit @ git+https://example.invalid/tmux-kit@abc123" in calls[0]
+
+
+@pytest.mark.parametrize(
+    "guard",
+    ["_install_cmd_targets_install_target", "_install_cmd_preserves_kit_override"],
+)
+def test_bad_install_command_guard_stops_before_execution(
+    agent_not_yet_installed, monkeypatch, capsys, guard
+):
     cli_mod = agent_not_yet_installed
     monkeypatch.setattr(
         cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
     )
     monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
-    )
-    probes = iter([(None, "not installed"), ("9.9.9", None)])
-    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
-
-    post_install_calls = []
-    monkeypatch.setattr(
-        cli_mod,
-        "_run_agent_post_install",
-        lambda uv_path: post_install_calls.append(uv_path) or (True, ""),
-    )
-
-    provider_results = iter(
-        [
-            (False, "anthropic (amplifier_module_provider_anthropic): transient"),
-            (True, ""),
-        ]
-    )
-    monkeypatch.setattr(
-        cli_mod,
-        "_agent_providers_importable_subprocess",
-        lambda providers=(): next(provider_results),
-    )
-
-    assert cli_mod.ensure_agent() is True
-    assert len(post_install_calls) == 2  # the retry actually ran
-    out = capsys.readouterr().out
-    assert "retrying" in out
-    assert "providers ready" in out
+    monkeypatch.setattr(cli_mod, guard, lambda *args: False)
+    assert cli_mod.ensure_agent() is False
+    assert "install command does not preserve source targets" in capsys.readouterr().out
 
 
-def test_provider_module_import_name_matches_bundle_convention():
-    import muxplex.cli as cli_mod
-
-    assert (
-        cli_mod._provider_module_import_name("anthropic")
-        == "amplifier_module_provider_anthropic"
-    )
-    assert (
-        cli_mod._provider_module_import_name("openai")
-        == "amplifier_module_provider_openai"
-    )
-
-
-def test_agent_providers_importable_detects_a_genuinely_missing_module():
-    """A REAL (unmocked) exercise of the check that would have caught the
-    shipped bug: a provider name whose module can never exist reports
-    False with a detail naming exactly what's missing, never a bare
-    unexplained False and never a silent True."""
-    import muxplex.cli as cli_mod
-
-    ok, detail = cli_mod._agent_providers_importable(
-        providers=("definitely-not-a-real-provider-xyz",)
-    )
-    assert ok is False
-    assert "definitely-not-a-real-provider-xyz" in detail
-    assert "amplifier_module_provider_definitely_not_a_real_provider_xyz" in detail
-
-
-def test_agent_providers_importable_all_present_returns_true_with_empty_detail():
-    """Sanity check on the positive branch using modules guaranteed
-    importable in any test environment (this test file's own package)."""
-    import muxplex.cli as cli_mod
-
-    ok, detail = cli_mod._agent_providers_importable(providers=())
-    assert ok is True
-    assert detail == ""
-
-
-# ---------------------------------------------------------------------------
-# `_agent_providers_importable_subprocess` -- the false-negative fix itself.
-#
-# See that function's docstring in cli.py for the full diagnosis: the
-# in-process check above is a reproducible false negative immediately after
-# an install that just happened in the SAME process, because
-# `importlib.invalidate_caches()` never reprocesses a `.pth` file written to
-# site-packages after this interpreter's own `site` startup already ran. The
-# test below reproduces exactly that shape -- a module that exists on disk
-# but was never on the CURRENT process's `sys.path` -- without needing a
-# real `uv`/`pip` install, and proves the in-process/subprocess checks give
-# the two different answers this fix depends on.
-# ---------------------------------------------------------------------------
-
-
-def test_agent_providers_importable_subprocess_detects_a_genuinely_missing_module():
-    """A REAL (unmocked) exercise of the fresh-subprocess check: a provider
-    name whose module can never exist reports False with a detail naming
-    exactly what's missing -- the subprocess path must fail loud exactly
-    like the in-process one, never silently report success for a module
-    that plain doesn't exist anywhere."""
-    import muxplex.cli as cli_mod
-
-    ok, detail = cli_mod._agent_providers_importable_subprocess(
-        providers=("definitely-not-a-real-provider-xyz",)
-    )
-    assert ok is False
-    assert "definitely-not-a-real-provider-xyz" in detail
-    assert "amplifier_module_provider_definitely_not_a_real_provider_xyz" in detail
-
-
-def test_agent_providers_importable_subprocess_all_present_returns_true_with_empty_detail():
-    """Sanity check on the positive (trivial, no providers requested)
-    branch -- must never shell out at all when there's nothing to check."""
-    import muxplex.cli as cli_mod
-
-    ok, detail = cli_mod._agent_providers_importable_subprocess(providers=())
-    assert ok is True
-    assert detail == ""
-
-
-def test_agent_providers_importable_subprocess_sees_module_just_installed_after_process_start(
-    monkeypatch, tmp_path
+def test_install_launch_failure_is_reported(
+    agent_not_yet_installed, monkeypatch, capsys
 ):
-    """THE regression test for the shipped false-negative: a provider
-    module that exists on disk but was never on THIS (the pytest worker's
-    own) process's `sys.path` -- exactly the shape of a module `uv pip
-    install -e` just wrote into site-packages after `ensure_agent()`'s
-    process already started -- must be INVISIBLE to the in-process check
-    and VISIBLE to the fresh-subprocess check. If a future change makes
-    `_agent_providers_importable_subprocess` import in-process again (or
-    otherwise stops spawning a genuinely fresh interpreter), this test
-    fails, because the in-process assertion below would then also pass for
-    the subprocess call and the two would stop disagreeing.
+    cli_mod = agent_not_yet_installed
+    monkeypatch.setattr(
+        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+
+    def fail(*args, **kwargs):
+        raise OSError("installer could not launch")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    assert cli_mod.ensure_agent() is False
+    assert (
+        "ERROR: could not install amplifier-agent: installer could not launch"
+        in capsys.readouterr().out
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public SDK version/API/contracts and engine gate (no agent construction).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def public_sdk(monkeypatch):
+    import muxplex.cli as cli_mod
+
+    create_agent = AsyncMock(
+        side_effect=AssertionError("the import probe must never construct an agent")
+    )
+
+    sdk = SimpleNamespace(
+        **{name: type(name, (), {}) for name in cli_mod._AGENT_PUBLIC_API},
+        __version__="0.20.0",
+        contract_version="agent-interface/1",
+        contract_versions=cli_mod._AGENT_CONTRACT_VERSIONS,
+    )
+    sdk.create_agent = create_agent
+    real_import = importlib.import_module
+    imports = []
+
+    def fake_import(name, *args, **kwargs):
+        if name == "amplifier_agent":
+            imports.append(name)
+            return sdk
+        if name == "amplifier_agent_engine":
+            imports.append(name)
+            return SimpleNamespace()
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    monkeypatch.setattr(cli_mod, "_agent_target_pin", lambda: "0.20.0")
+    yield sdk, imports
+    create_agent.assert_not_called()
+
+
+def test_public_probe_accepts_sdk_and_only_imports_public_roots(public_sdk):
+    import muxplex.cli as cli_mod
+
+    _, imports = public_sdk
+    assert cli_mod._agent_import_probe() == ("0.20.0", None)
+    assert imports == ["amplifier_agent", "amplifier_agent_engine"]
+
+
+def test_public_probe_explicit_pin_wins_over_current_muxplex_metadata(
+    public_sdk, monkeypatch
+):
+    import muxplex.cli as cli_mod
+
+    def fail():
+        raise AssertionError(
+            "explicit postinstall pin must not read changed muxplex metadata"
+        )
+
+    monkeypatch.setattr(cli_mod, "_agent_target_pin", fail)
+    assert cli_mod._agent_import_probe("0.20.0") == ("0.20.0", None)
+
+
+@pytest.mark.parametrize("version", [None, "0.19.0", "0.20.1", 20])
+def test_public_probe_rejects_wrong_or_missing_version(public_sdk, version):
+    import muxplex.cli as cli_mod
+
+    sdk, imports = public_sdk
+    sdk.__version__ = version
+    actual, error = cli_mod._agent_import_probe("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "version mismatch: expected 0.20.0" in error
+    assert imports == ["amplifier_agent"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "create_agent",
+        "Agent",
+        "AgentOptions",
+        "Session",
+        "SessionOptions",
+        "Turn",
+        "TurnInput",
+        "Tool",
+        "ToolContext",
+        "ToolResultEvent",
+        "UsageEvent",
+    ],
+)
+@pytest.mark.parametrize("invalid", [False, True], ids=["missing", "noncallable"])
+def test_public_probe_rejects_every_missing_or_invalid_api(public_sdk, name, invalid):
+    import muxplex.cli as cli_mod
+
+    sdk, imports = public_sdk
+    if invalid:
+        setattr(sdk, name, object())
+    else:
+        delattr(sdk, name)
+    actual, error = cli_mod._agent_import_probe("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "public API missing/invalid" in error
+    assert name in error
+    assert imports == ["amplifier_agent"]
+
+
+def test_public_probe_rejects_synchronous_factory(public_sdk):
+    import muxplex.cli as cli_mod
+
+    sdk, _ = public_sdk
+    sdk.create_agent = lambda *args, **kwargs: None
+    actual, error = cli_mod._agent_import_probe("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "create_agent must be async" in error
+
+
+@pytest.mark.parametrize("contract", [None, "agent-interface/0", "agent-interface/2"])
+def test_public_probe_rejects_wrong_primary_contract(public_sdk, contract):
+    import muxplex.cli as cli_mod
+
+    sdk, _ = public_sdk
+    sdk.contract_version = contract
+    actual, error = cli_mod._agent_import_probe("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "contract_version must be agent-interface/1" in error
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["agent-interface/1", "turn-events/1", "language-binding/1", "host-config/1"],
+)
+def test_public_probe_requires_each_contract_marker(public_sdk, missing):
+    import muxplex.cli as cli_mod
+
+    sdk, _ = public_sdk
+    sdk.contract_versions = tuple(
+        marker for marker in cli_mod._AGENT_CONTRACT_VERSIONS if marker != missing
+    )
+    actual, error = cli_mod._agent_import_probe("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "contract_versions missing required markers" in error
+
+
+@pytest.mark.parametrize(
+    "contracts", [None, "agent-interface/1", {"agent-interface/1": 1}]
+)
+def test_public_probe_rejects_invalid_contract_collection(public_sdk, contracts):
+    import muxplex.cli as cli_mod
+
+    sdk, _ = public_sdk
+    sdk.contract_versions = contracts
+    actual, error = cli_mod._agent_import_probe("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "contract_versions missing required markers" in error
+
+
+@pytest.mark.parametrize("module_name", ["amplifier_agent", "amplifier_agent_engine"])
+@pytest.mark.parametrize("exc_type", [ModuleNotFoundError, RuntimeError])
+def test_public_probe_fails_loud_on_sdk_or_engine_import_error(
+    public_sdk, monkeypatch, module_name, exc_type
+):
+    import muxplex.cli as cli_mod
+
+    stub_import = importlib.import_module
+
+    def failing_import(name, *args, **kwargs):
+        if name == module_name:
+            raise exc_type(f"broken {module_name}")
+        return stub_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", failing_import)
+    actual, error = cli_mod._agent_import_probe("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "public SDK/engine import failed" in error
+    assert exc_type.__name__ in error
+    assert module_name in error
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="public SDK requires Python >=3.12"
+)
+def test_real_installed_sdk_public_surface():
+    """Normal 3.12+ CI installs the agent extra: absence is FAILURE, not a skip.
+
+    In-process imports only; no provider call, constructor, or subprocess.
+    This proves packaging/public surface, not execution of a live turn.
     """
     import muxplex.cli as cli_mod
 
-    provider = "muxfx3testprovider"
-    module_name = cli_mod._provider_module_import_name(provider)
-    pkg_dir = tmp_path / module_name
-    pkg_dir.mkdir()
-    (pkg_dir / "__init__.py").write_text("VALUE = 1\n")
-
-    # Sanity/control: NOT importable in the current process -- this
-    # directory was never added to this pytest worker's own `sys.path`,
-    # mirroring a package written to a venv's site-packages after this
-    # interpreter's own `site` startup already ran.
-    in_process_ok, in_process_detail = cli_mod._agent_providers_importable(
-        providers=(provider,)
-    )
-    assert in_process_ok is False
-    assert module_name in in_process_detail
-
-    # The fresh-subprocess probe spawns a brand-new interpreter that
-    # inherits PYTHONPATH from this process's environment -- so it DOES
-    # see the module, exactly as a real fresh interpreter sees a
-    # just-completed `uv pip install -e` that this process cannot.
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
-    subprocess_ok, subprocess_detail = cli_mod._agent_providers_importable_subprocess(
-        providers=(provider,)
-    )
-    assert subprocess_ok is True
-    assert subprocess_detail == ""
+    assert metadata.version("amplifier-agent") == "0.20.0"
+    assert metadata.distribution("amplifier-agent-engine") is not None
+    sdk = importlib.import_module("amplifier_agent")
+    for name in (
+        "create_agent",
+        "Agent",
+        "AgentOptions",
+        "Session",
+        "SessionOptions",
+        "Turn",
+        "TurnInput",
+        "Tool",
+        "ToolContext",
+        "ToolResultEvent",
+        "UsageEvent",
+    ):
+        assert callable(getattr(sdk, name, None)), name
+    assert inspect.iscoroutinefunction(sdk.create_agent)
+    assert cli_mod._agent_import_probe("0.20.0") == ("0.20.0", None)
 
 
-def test_run_agent_post_install_calls_loader_via_sys_executable(monkeypatch):
-    """Must invoke `sys.executable -c <snippet calling load_and_prepare_bundle
-    directly>` -- NOT the `amplifier-agent-post-install` CLI script (see the
-    module-level comment above `_AGENT_PANEL_PROVIDERS` for why that script's
-    own cache short-circuit makes it unsafe: it silently no-ops for every
-    venv other than the first one that ever primed the shared cache)."""
-    import sys
+# ---------------------------------------------------------------------------
+# Fresh-interpreter verification: never trust cached modules or installer exit 0.
+# ---------------------------------------------------------------------------
 
+
+def test_fresh_probe_uses_same_interpreter_explicit_pin_and_bounded_capture(
+    monkeypatch,
+):
     import muxplex.cli as cli_mod
 
-    captured = {}
+    captured = []
 
     def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["env"] = kwargs.get("env")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="prepared ok")
+        captured.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout='["0.20.0", null]', stderr="")
+
+    def fail(*args, **kwargs):
+        raise AssertionError(
+            "fresh probe must not use this process's cached imports/pin"
+        )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-
-    ok, detail = cli_mod._run_agent_post_install("/opt/uvbin/uv")
-    assert ok is True
-    assert detail == "prepared ok"
-    cmd = captured["cmd"]
-    assert cmd[0] == sys.executable
-    assert cmd[1] == "-c"
-    assert "load_and_prepare_bundle" in cmd[2]
-    assert "install_deps=True" in cmd[2]
-    assert "amplifier-agent-post-install" not in " ".join(cmd)
-    assert captured["env"]["PATH"].startswith("/opt/uvbin")
+    monkeypatch.setattr(cli_mod, "_agent_import_probe", fail)
+    monkeypatch.setattr(cli_mod, "_agent_target_pin", fail)
+    assert cli_mod._agent_import_probe_subprocess("0.20.0") == ("0.20.0", None)
+    assert len(captured) == 1
+    cmd, kwargs = captured[0]
+    assert cmd[:2] == [sys.executable, "-c"]
+    assert "from muxplex.cli import _agent_import_probe" in cmd[2]
+    assert "_agent_import_probe('0.20.0')" in cmd[2]
+    assert kwargs == {"capture_output": True, "text": True, "timeout": 60}
 
 
-def test_run_agent_post_install_reports_nonzero_exit(monkeypatch):
+@pytest.mark.parametrize("stdout", ["", "not JSON", "[", 'noise\n["0.20.0", null]'])
+def test_fresh_probe_rejects_unparseable_output(monkeypatch, stdout):
     import muxplex.cli as cli_mod
 
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda cmd, **k: subprocess.CompletedProcess(
-            cmd, 1, stdout="", stderr="boom: disk full"
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd, 0, stdout=stdout, stderr=""
         ),
     )
+    actual, error = cli_mod._agent_import_probe_subprocess("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "unparseable output" in error
 
-    ok, detail = cli_mod._run_agent_post_install("/usr/bin/uv")
-    assert ok is False
-    assert "boom: disk full" in detail
 
-
-def test_run_agent_post_install_reports_subprocess_launch_failure(monkeypatch):
+@pytest.mark.parametrize(
+    "payload", [None, {}, "ready", [], ["0.20.0"], ["0.20.0", None, None]]
+)
+def test_fresh_probe_rejects_malformed_result_shape(monkeypatch, payload):
     import muxplex.cli as cli_mod
 
-    def fail(*a, **k):
-        raise OSError("no such file or directory")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(payload), stderr=""
+        ),
+    )
+    actual, error = cli_mod._agent_import_probe_subprocess("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "invalid result" in error
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ["0.19.0", None],
+        ["0.20.0", "engine broken"],
+        ["0.20.0", False],
+        [None, ""],
+        [None, None],
+        [20, None],
+    ],
+)
+def test_fresh_probe_rejects_unverified_version_or_error(monkeypatch, payload):
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(payload), stderr=""
+        ),
+    )
+    actual, error = cli_mod._agent_import_probe_subprocess("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "did not verify version/API" in error
+
+
+def test_fresh_probe_propagates_public_surface_error(monkeypatch):
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd, 0, stdout='[null, "engine unavailable"]', stderr=""
+        ),
+    )
+    assert cli_mod._agent_import_probe_subprocess("0.20.0") == (
+        None,
+        "engine unavailable",
+    )
+
+
+def test_fresh_probe_rejects_nonzero_exit_even_with_success_payload(monkeypatch):
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd, 7, stdout='["0.20.0", null]', stderr="probe crashed"
+        ),
+    )
+    actual, error = cli_mod._agent_import_probe_subprocess("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert "exited 7: probe crashed" in error
+
+
+@pytest.mark.parametrize(
+    "exception, detail",
+    [
+        (subprocess.TimeoutExpired("probe", 60), "timed out after 60s"),
+        (OSError("no such interpreter"), "could not run public SDK import probe"),
+    ],
+)
+def test_fresh_probe_rejects_timeout_and_launch_error(monkeypatch, exception, detail):
+    import muxplex.cli as cli_mod
+
+    def fail(*args, **kwargs):
+        raise exception
 
     monkeypatch.setattr(subprocess, "run", fail)
+    actual, error = cli_mod._agent_import_probe_subprocess("0.20.0")
+    assert actual is None
+    assert error is not None
+    assert detail in error
 
-    ok, detail = cli_mod._run_agent_post_install("/usr/bin/uv")
-    assert ok is False
-    assert "no such file or directory" in detail
+
+def test_fresh_install_checks_shape_then_fresh_sdk_once_without_activation(
+    agent_not_yet_installed, monkeypatch, capsys
+):
+    cli_mod = agent_not_yet_installed
+    reads = []
+    calls = []
+    probe_calls = []
+
+    def install_info(dist_name="muxplex"):
+        reads.append(dist_name)
+        assert dist_name in ("muxplex", "tmux-kit")
+        return _pypi_info()
+
+    def cached_probe():
+        probe_calls.append("cached")
+        assert probe_calls == ["cached"], "postinstall must use a fresh interpreter"
+        return None, "cached SDK not installed"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[1:3] == ["tool", "install"]:
+            assert reads == ["muxplex", "tmux-kit"]
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        assert cmd[:2] == [sys.executable, "-c"]
+        assert reads == ["muxplex", "tmux-kit", "muxplex", "tmux-kit"]
+        assert "_agent_import_probe('9.9.9')" in cmd[2]
+        return subprocess.CompletedProcess(cmd, 0, stdout='["9.9.9", null]', stderr="")
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", install_info)
+    monkeypatch.setattr(cli_mod, "_agent_import_probe", cached_probe)
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert cli_mod.ensure_agent() is True
+    assert len(calls) == 2  # installer + public probe; no activation/retry worker
+    assert probe_calls == ["cached"]
+    assert "public SDK/engine ready" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "stdout, returncode, exception, detail",
+    [
+        ("", 0, None, "unparseable output"),
+        ("{}", 0, None, "invalid result"),
+        ('["0.19.0", null]', 0, None, "did not verify version/API"),
+        ('[null, "engine unavailable"]', 0, None, "engine unavailable"),
+        ('["9.9.9", "engine unavailable"]', 0, None, "did not verify version/API"),
+        ('["9.9.9", null]', 2, None, "exited 2: probe failed"),
+        ("", 0, subprocess.TimeoutExpired("probe", 60), "timed out after 60s"),
+        ("", 0, OSError("no interpreter"), "could not run public SDK import probe"),
+    ],
+)
+def test_installer_success_never_masks_failed_fresh_probe(
+    agent_not_yet_installed, monkeypatch, capsys, stdout, returncode, exception, detail
+):
+    cli_mod = agent_not_yet_installed
+    calls = []
+    monkeypatch.setattr(
+        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[1:3] == ["tool", "install"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        assert cmd[:2] == [sys.executable, "-c"]
+        if exception is not None:
+            raise exception
+        return subprocess.CompletedProcess(
+            cmd, returncode, stdout=stdout, stderr="probe failed"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert cli_mod.ensure_agent() is False
+    assert len(calls) == 2  # no silent retry/activation after a rejected public surface
+    out = capsys.readouterr().out
+    assert "ERROR" in out
+    assert "still not importable" in out
+    assert detail in out
+    assert "public SDK/engine ready" not in out
+
+
+def test_installer_and_probes_do_not_override_engine_dependencies_or_activate():
+    import muxplex.cli as cli_mod
+
+    source = "\n".join(
+        inspect.getsource(fn)
+        for fn in (
+            cli_mod.ensure_agent,
+            cli_mod._agent_import_probe,
+            cli_mod._agent_import_probe_subprocess,
+        )
+    )
+    for retired in (
+        "load_and_prepare_bundle",
+        "activate_all",
+        "_run_agent_post_install",
+        "amplifier-agent-post-install",
+        "amplifier_module_provider_",
+        "amplifier_agent.cli",
+        "amplifier-foundation",
+        "amplifier-core",
+    ):
+        assert retired not in source
+    assert 'import_module("amplifier_agent_engine")' in source
 
 
 # ---------------------------------------------------------------------------
