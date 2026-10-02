@@ -261,6 +261,7 @@ function loadChatPanel({ fetchImpl, withAttachmentStrip = true } = {}) {
     clearTimeout,
     TextEncoder,
     TextDecoder,
+    AbortController,
   };
   const context = vm.createContext(sandbox);
   vm.runInContext(chatJsSource, context, { filename: 'chat.js' });
@@ -302,6 +303,7 @@ function sseResponse(chunkObjs) {
   return {
     ok: true,
     status: 200,
+    headers: { get: (key) => key === 'X-Muxplex-Agent-Session-Id' ? 'attachment-session' : 'attachment-run' },
     text: async () => raw,
     body: {
       getReader() {
@@ -547,6 +549,9 @@ test('1i9: the composer is cleared after a send, so the next message is not doub
 
   const second = lastUserMessage(requests[1]);
   assert.strictEqual(second.content, 'two', 'the second message must not re-send the first image');
+  assert.deepEqual(requests[1].messages, [{ role: 'user', content: 'two' }],
+    'durable SDK history is not reconstructed from the image-bearing presentation transcript');
+  assert.equal(requests[1].muxplex_agent.session_id, 'attachment-session');
 });
 
 // ---------------------------------------------------------------------
