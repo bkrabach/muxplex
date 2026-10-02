@@ -385,3 +385,263 @@ async def test_shutdown_during_preparation_owns_late_handles(monkeypatch, tmp_pa
         run.prepared.set()
         await run.close()
     assert closed == ["closed"] and run.closed and run.lease.fd == -1
+
+
+async def test_definitive_image_refusal_after_effect_allows_corrected_resume(
+    monkeypatch, tmp_path
+):
+    # Unit admission seam: only public SDK records/operations are used here.
+    # Real engine/provider execution remains the manager's integration suite.
+    sdk = pytest.importorskip("amplifier_agent")
+    history = []
+    effects = []
+    accepted_inputs = []
+    closed_handles = []
+
+    class Session:
+        def __init__(self, sid, options):
+            self.sid, self.options = sid, options
+            self.history = list(history)
+
+        async def start_turn(self, value):
+            if any(isinstance(part, sdk.ImagePart) for part in value.content):
+                raise sdk.AgentError(
+                    "image_unsupported", "input", "Images refused.", "Send text only."
+                )
+            accepted_inputs.append(value)
+            return Turn(self, value, len(history) == 0)
+
+        async def close(self):
+            closed_handles.append("session")
+
+    class Turn:
+        def __init__(self, session, value, first):
+            self.session, self.value, self.first = session, value, first
+            self.info = sdk.TurnInfo(session.sid, f"turn-{len(history) + 1}")
+
+        async def events(self):
+            if self.first:
+                tool = next(
+                    tool
+                    for tool in self.session.options.tools
+                    if tool.name == INPUT_TOOL
+                )
+                await tool.handler(
+                    {"session_name": "fixture", "text": "effect", "enter": False},
+                    sdk.ToolContext("first-call"),
+                )
+            terminal = sdk.TurnResult("success", content=[sdk.TextPart("Reply")])
+            history.append(sdk.TurnRecord(self.info.turn_id, self.value, terminal))
+            yield sdk.Event(
+                "turn-events/1",
+                self.info.session_id,
+                self.info.turn_id,
+                1,
+                "terminal",
+                terminal,
+            )
+
+    class Agent:
+        def __init__(self, options):
+            self.options = options
+
+        async def create_session(self, options):
+            assert options.persistence == "durable"
+            return Session(options.session_id, self.options)
+
+        async def resume_session(self, sid):
+            return Session(sid, self.options)
+
+        async def close(self):
+            closed_handles.append("agent")
+
+    async def create(options):
+        return Agent(options)
+
+    monkeypatch.setattr(
+        runner.credentials, "credential_home", lambda: tmp_path, raising=False
+    )
+    monkeypatch.setattr(
+        runner.credentials, "create_agent_with_credentials", create, raising=False
+    )
+    body = {
+        "messages": [{"role": "user", "content": "First effect"}],
+        "muxplex_agent": {"protocol": 1, "browser_tools": True},
+    }
+    first = await runner.prepare_chat(body, owner="owner")
+    async with asyncio.timeout(2):
+        async for chunk in first.stream():
+            payload = json.loads(chunk[6:]) if chunk != wire.sse_done() else {}
+            if "muxplex_browser_tool" in payload:
+                cap = payload["muxplex_browser_tool"]
+                effects.append(cap["call_id"])
+                runner.submit_browser_result(
+                    {
+                        **{
+                            key: cap[key]
+                            for key in ("run_id", "call_id", "result_token")
+                        },
+                        "outcome": "completed",
+                        "content": "Recorded",
+                        "confirmed": True,
+                    },
+                    owner="owner",
+                )
+    assert first.terminal.state == "success" and effects == ["first-call"]
+    resume = {
+        **body,
+        "muxplex_agent": {**body["muxplex_agent"], "session_id": first.session_id},
+    }
+    image = {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,aW1hZ2U="},
+    }
+    with pytest.raises(sdk.AgentError) as refused:
+        await runner.prepare_chat(
+            {**resume, "messages": [{"role": "user", "content": [image]}]},
+            owner="owner",
+        )
+    assert refused.value.code == "image_unsupported"
+    assert len(history) == 1 and len(accepted_inputs) == 1
+    marker = tmp_path / "muxplex-browser-state" / f"{first.session_id}.json"
+    assert json.loads(marker.read_text())["run"] is None
+    assert not runner._runs
+    corrected = await runner.prepare_chat(
+        {**resume, "messages": [{"role": "user", "content": "Corrected text"}]},
+        owner="owner",
+    )
+    assert len(corrected.session.history) == 1
+    output = [chunk async for chunk in corrected.stream()]
+    assert output[-1] == wire.sse_done()
+    assert not any(b"muxplex_browser_tool" in chunk for chunk in output)
+    assert effects == ["first-call"] and len(history) == 2
+    assert len(accepted_inputs) == 2 and closed_handles == ["session", "agent"] * 3
+
+
+@pytest.mark.parametrize("failure", ["cancelled", "untyped", "internal_failed"])
+async def test_uncertain_admission_retains_provisional_interruption_marker(
+    monkeypatch, tmp_path, failure
+):
+    sdk = pytest.importorskip("amplifier_agent")
+    error = {
+        "cancelled": asyncio.CancelledError(),
+        "untyped": RuntimeError("Admission interrupted"),
+        "internal_failed": sdk.AgentError(
+            "internal_failed", "internal", "Unknown admission state.", "Start fresh."
+        ),
+    }[failure]
+
+    async def start_turn(value):
+        raise error
+
+    async def close():
+        pass
+
+    async def create_session(options):
+        return SimpleNamespace(start_turn=start_turn, close=close)
+
+    async def create(options):
+        return SimpleNamespace(create_session=create_session, close=close)
+
+    monkeypatch.setattr(
+        runner.credentials, "credential_home", lambda: tmp_path, raising=False
+    )
+    monkeypatch.setattr(
+        runner.credentials, "create_agent_with_credentials", create, raising=False
+    )
+    with pytest.raises(type(error)):
+        await runner.prepare_chat(
+            {
+                "messages": [{"role": "user", "content": "Hello"}],
+                "muxplex_agent": {"protocol": 1, "browser_tools": True},
+            },
+            owner="owner",
+        )
+    (path,) = (tmp_path / "muxplex-browser-state").glob("*.json")
+    assert json.loads(path.read_text())["run"]["turn_id"] is None
+    lease = SessionLease(path.parent, path.stem, "owner", new=False)
+    try:
+        with pytest.raises(AgentRequestError) as interrupted:
+            lease.reconcile([])
+        assert interrupted.value.code == "session_interrupted"
+    finally:
+        lease.close()
+    assert not runner._runs
+
+
+@pytest.mark.parametrize(
+    "state", ["failure", "cancelled", "rejected", "incomplete", "pump_error"]
+)
+@pytest.mark.parametrize("terminal_usage", [False, True])
+async def test_unsuccessful_stream_projects_last_usage_once_without_success(
+    tmp_path, state, terminal_usage
+):
+    sdk = pytest.importorskip("amplifier_agent")
+
+    def usage(tokens_in, tokens_out):
+        return sdk.Usage(
+            [
+                sdk.UsageEntry(
+                    "anthropic",
+                    "model",
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    cache_read_tokens=3,
+                    cache_write_tokens=5,
+                )
+            ]
+        )
+
+    run = runner.LiveRun(
+        owner="owner", session_id="d" * 32, model="model", browser=True
+    )
+    run.lease = SessionLease(tmp_path, run.session_id, "owner", new=True)
+    run.lease.mark(run.run_id, "accepted-turn")
+    for snapshot in [usage(10, 1), usage(20, None)]:
+        run.queue.put_nowait(
+            SimpleNamespace(type="usage", payload=sdk.UsageEvent(snapshot))
+        )
+    error = sdk.AgentError(
+        "image_unsupported", "input", "Measured turn failed.", "Choose another model."
+    )
+    if state == "pump_error":
+        run.pump_error = error
+    elif state != "incomplete":
+        run.terminal = sdk.TurnResult(
+            state, error=error, usage=usage(40, 4) if terminal_usage else None
+        )
+    run.queue.put_nowait(None)
+    output = [chunk async for chunk in run.stream()]
+    payloads = [json.loads(chunk[6:]) for chunk in output]
+    projected = [payload for payload in payloads if "usage" in payload]
+    assert len(projected) == 1 and "error" in projected[0]
+    final = terminal_usage and state not in {"incomplete", "pump_error"}
+    assert projected[0]["usage"] == {
+        "prompt_tokens": 45 if final else 25,
+        "completion_tokens": 4 if final else None,
+        "total_tokens": 49 if final else None,
+        "prompt_tokens_details": {"cached_tokens": 3},
+    }
+    assert projected[0]["error"]["code"] == (
+        "incomplete_turn" if state == "incomplete" else "image_unsupported"
+    )
+    assert wire.sse_done() not in output
+    assert not any(
+        choice.get("finish_reason") == "stop"
+        for payload in payloads
+        for choice in payload.get("choices", [])
+    )
+    # An admitted turn with the SAME image_unsupported code must not erase its
+    # marker: only a definitive refusal from start_turn is safe to clear.
+    assert json.loads(run.lease.path.read_text())["run"]["turn_id"] == "accepted-turn"
+
+
+async def test_unsuccessful_stream_without_usage_does_not_invent_zero_counts():
+    run = runner.LiveRun(owner="", session_id="e" * 32, model="model", browser=False)
+    run.terminal = SimpleNamespace(state="cancelled", error=None, usage=None)
+    run.queue.put_nowait(None)
+    output = [chunk async for chunk in run.stream()]
+    payloads = [json.loads(chunk[6:]) for chunk in output]
+    assert payloads[-1]["error"]["code"] == "turn_cancelled"
+    assert not any("usage" in payload for payload in payloads)
+    assert wire.sse_done() not in output
