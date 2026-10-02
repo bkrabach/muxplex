@@ -570,6 +570,31 @@ function hangingSseFetch() {
   };
 }
 
+/** A text delta followed by a controllable, cancellation-ignoring reader.
+ * Stop must retain/reset state before read() settles, not rely on transport
+ * cooperation. resolve() later also exercises stale-reader cleanup. */
+function partialSseResponse(text) {
+  const gate = makeGate();
+  const response = sseChunksResponse([]);
+  response.body = { getReader() {
+    let delivered = false;
+    return {
+      async read() {
+        if (!delivered) {
+          delivered = true;
+          return { done: false, value: new TextEncoder().encode(
+            'data: ' + JSON.stringify({ id: 'partial-chunk', choices: [{ delta: { content: text } }] }) + '\n\n') };
+        }
+        await gate.promise;
+        return { done: true };
+      },
+      cancel: async () => {},
+      releaseLock() {},
+    };
+  } };
+  return { response, resolve: gate.resolve };
+}
+
 /** Manually-fireable replacement for setTimeout/clearTimeout: schedule()
  * calls are recorded, never fire on their own. fireLatest() invokes the
  * most recently scheduled still-pending callback (armStallWatch always
@@ -2286,6 +2311,107 @@ test('v1: Stop during issued input says it may have taken effect; old completion
   assert.equal(panel.fetchCalls.some((c) => c.url === RESULTS), false);
 });
 
+test('v1: Stop exports partial assistant text and issued input before pending work settles', async () => {
+  const gate = makeGate();
+  const blobs = [];
+  const partial = 'Partial incident explanation, not a completed answer.';
+  const panel = loadChatPanel({
+    sandboxOverrides: { Blob: class { constructor(parts) { blobs.push(parts.join('')); } } },
+    fetchImpl: async (url) => {
+      if (url === COMPLETIONS) return sseChunksResponse([
+        { id: 'incident-chunk', choices: [{ delta: { content: partial } }] },
+        ...inputEvents('incident-input'),
+      ]);
+      if (/\/input$/.test(url)) {
+        await gate.promise; // the server may already have executed it; do not infer undo
+        return jsonResponse(200, { ok: true, snapshot: 'late effect response' });
+      }
+      return jsonResponse(200, {});
+    },
+  });
+  panel.els['chat-input'].value = 'type';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-confirm-dialog'].open);
+  panel.els['chat-confirm-send-btn']._fire('click');
+  await waitUntil(() => panel.fetchCalls.some((c) => /\/input$/.test(c.url)));
+  panel.els['chat-stop-btn']._fire('click');
+  panel.els['chat-export-btn']._fire('click'); // immediate, before either await unwinds
+  const record = blobs.at(-1);
+  assert.match(record, /Finished `cancelled`/);
+  assert.equal(record.split(partial).length - 1, 1);
+  assert.match(record, /Confirmation gate: CONFIRMED/);
+  assert.match(record, /Effect dispatched: `POST \/api\/sessions\/scratch\/input`/);
+  assert.match(record, /"text":"printf hello"/);
+  assert.match(record, /effect is unknown/);
+  assert.match(record, /\*\*turn cancelled\*\*/);
+  assert.match(record, /Cancellation does not undo dispatched input/);
+  assert.doesNotMatch(record, /Finished `stop`|test-capability-incident-input/);
+  gate.resolve();
+  await new Promise((r) => setTimeout(r, 10));
+  panel.els['chat-export-btn']._fire('click');
+  assert.equal((blobs.at(-1).match(/Finished `cancelled`/g) || []).length, 1);
+  assert.doesNotMatch(blobs.at(-1), /late effect response/);
+  assert.equal(panel.fetchCalls.some((c) => c.url === RESULTS), false);
+});
+
+test('v1: Stop and New reset live offsets and pending timers; next shorter reply is announced fully', async () => {
+  for (const control of ['chat-stop-btn', 'chat-new-btn']) {
+    const timers = makeManualTimers();
+    const first = partialSseResponse('An older answer with a much longer sentence. Pending old remainder');
+    const next = partialSseResponse('Hi.');
+    let turns = 0;
+    const panel = loadChatPanel({
+      sandboxOverrides: { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+      fetchImpl: async (url) => url === COMPLETIONS
+        ? (++turns === 1 ? first.response : next.response) : jsonResponse(200, {}),
+    });
+    panel.els['chat-input'].value = 'old';
+    panel.els['chat-send-btn']._fire('click');
+    await waitUntil(() => fullText(panel.els['chat-messages']).includes('Pending old remainder'));
+    timers.fireLatest(); // advance liveAnnounced past the entire length of the next reply
+    assert.equal(panel.els['chat-live'].textContent, 'An older answer with a much longer sentence.');
+    assert.equal(timers.pendingCount(), 1, 'the unfinished clause has a pending live timer');
+    panel.els[control]._fire('click');
+    assert.equal(timers.pendingCount(), 0, 'Stop/New synchronously clears announcement timers');
+    assert.doesNotMatch(panel.els['chat-live'].textContent, /Pending old remainder/);
+    panel.els['chat-input'].value = 'next';
+    panel.els['chat-send-btn']._fire('click');
+    await waitUntil(() => fullText(panel.els['chat-messages']).includes('Hi.'));
+    first.resolve(); // old reader cleanup must not reset the new turn's state
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(timers.pendingCount(), 1);
+    timers.fireLatest();
+    assert.equal(panel.els['chat-live'].textContent, 'Hi.');
+    panel.els['chat-stop-btn']._fire('click');
+    next.resolve();
+    assert.equal(timers.pendingCount(), 0);
+  }
+});
+
+test('v1: a cancelled old reader cannot close the next turn confirmation', async () => {
+  const old = partialSseResponse('Old partial answer.');
+  let turns = 0;
+  const panel = loadChatPanel({ fetchImpl: async (url) => url === COMPLETIONS
+    ? (++turns === 1 ? old.response : sseChunksResponse(inputEvents('next-input')))
+    : jsonResponse(200, {}),
+  });
+  panel.els['chat-input'].value = 'old';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => fullText(panel.els['chat-messages']).includes('Old partial answer.'));
+  panel.els['chat-stop-btn']._fire('click');
+  panel.els['chat-input'].value = 'next';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-confirm-dialog'].open);
+  old.resolve();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(panel.els['chat-confirm-dialog'].open, true, 'only this turn can resolve its consent');
+  assert.equal(panel.fetchCalls.some((c) => /\/input$/.test(c.url) || c.url === RESULTS), false);
+  panel.els['chat-confirm-cancel-btn']._fire('click');
+  await waitUntil(() => !panel.els['chat-send-btn'].disabled);
+  assert.equal(resultPayload(panel).outcome, 'failed');
+  assert.equal(panel.fetchCalls.some((c) => /\/input$/.test(c.url)), false);
+});
+
 test('v1: result refusal is not retried and stops queued actions', async () => {
   const response = sseChunksResponse([
     ...toolCallTurnChunks('list_muxplex_sessions', {}, 'result-refused'),
@@ -2320,6 +2446,7 @@ test('v1: EOF or DONE without stop, and stop without DONE, are incomplete', asyn
     'data: [DONE]\n\n',
     'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
   ]) {
+    const blobs = [];
     const response = sseChunksResponse([]);
     response.body = { getReader() {
       let delivered = false;
@@ -2327,9 +2454,16 @@ test('v1: EOF or DONE without stop, and stop without DONE, are incomplete', asyn
         (delivered = true, { done: false, value: new TextEncoder().encode(raw) }),
       cancel: async () => {} };
     } };
-    const panel = loadChatPanel({ fetchImpl: async (url) => url === COMPLETIONS ? response : jsonResponse(200, {}) });
+    const panel = loadChatPanel({
+      sandboxOverrides: { Blob: class { constructor(parts) { blobs.push(parts.join('')); } } },
+      fetchImpl: async (url) => url === COMPLETIONS ? response : jsonResponse(200, {}),
+    });
     await sendAndWait(panel);
     assert.match(fullText(panel.els['chat-messages']), /incomplete/);
+    panel.els['chat-export-btn']._fire('click');
+    assert.match(blobs.at(-1), /Finished `incomplete`/);
+    assert.doesNotMatch(blobs.at(-1), /Finished `stop`/);
+    if (raw.includes('partial')) assert.match(blobs.at(-1), /\*\*assistant:\*\*[\s\S]*partial/);
   }
 });
 
@@ -2351,6 +2485,48 @@ test('v1: callback capability never appears in markdown export, tools still do',
   const record = blobs.join('\n');
   assert.doesNotMatch(record, /test-capability-secret-call|test-capability-details/);
   assert.match(record, /list_muxplex_sessions/);
+  assert.match(record, /get_muxplex_session_details/);
+  assert.match(record, /redacted/);
+});
+
+test('v1: capture boundary scrubs nested capabilities, escaped JSON and earlier echoes', async () => {
+  const blobs = [];
+  const capturedConsole = { error() {}, warn() {}, log() {} };
+  const token = 'callback-"quoted"\\secret';
+  const alias = 'nested-capability-authority';
+  const events = toolCallTurnChunks('get_muxplex_session_details', { session_name: 'scratch' }, 'nested');
+  events[0].muxplex_browser_tool.result_token = token;
+  const panel = loadChatPanel({
+    sandboxOverrides: {
+      console: capturedConsole,
+      Blob: class { constructor(parts) { blobs.push(parts.join('')); } },
+    },
+    fetchImpl: async (url) => {
+      if (url === '/api/settings') {
+        // Captured before the callback reveals which opaque value is authority.
+        return jsonResponse(200, { snapshot: token });
+      }
+      if (url === COMPLETIONS) return sseChunksResponse(events);
+      if (url === '/api/sessions/scratch') {
+        return jsonResponse(200, { name: 'scratch', snapshot: JSON.stringify({
+          nested: { result_token: token, capability: alias }, echo: alias,
+        }) });
+      }
+      return jsonResponse(200, {});
+    },
+  });
+  await waitUntil(() => panel.fetchCalls.some((c) => c.url === '/api/settings'));
+  // Wait for the init-time response body to be captured before starting SSE.
+  await new Promise((r) => setTimeout(r, 0));
+  capturedConsole.error('earlier echo: ' + token + ' ' + alias);
+  await sendAndWait(panel);
+  capturedConsole.warn({ nested: JSON.stringify({ capability: alias }), echo: token });
+  const sent = resultPayload(panel);
+  assert.equal(sent.result_token, token, 'capture redaction must not alter callback authority');
+  assert.match(sent.content, /nested-capability-authority/, 'tool result wire stays unchanged');
+  panel.els['chat-export-btn']._fire('click');
+  const record = blobs.join('\n');
+  assert.doesNotMatch(record, /quoted|\\secret|nested-capability-authority/);
   assert.match(record, /get_muxplex_session_details/);
   assert.match(record, /redacted/);
 });
