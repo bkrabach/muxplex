@@ -11,6 +11,31 @@ _JS: str = JS_PATH.read_text()
 _TERMINAL_JS: str = TERMINAL_JS_PATH.read_text()
 
 
+def test_chat_v1_has_no_recursive_tool_history_request() -> None:
+    """The browser executor cannot replay provider tool history."""
+    chat = JS_PATH.with_name("chat.js").read_text()
+    turn = chat.split("async function runTurn(", 1)[1].split(
+        "async function handleSend(", 1
+    )[0]
+    assert "await runTurn(" not in turn
+    assert 'role: "tool"' not in chat
+    assert "toolCallsByIndex" not in chat
+    assert ".concat([userMessage])" in turn
+    assert "queueBrowserTool(turn, chunk.muxplex_browser_tool)" in turn
+
+
+def test_chat_stop_is_reachable_inside_native_confirmation_dialog() -> None:
+    """Native showModal() makes header controls inert; Stop must live inside it."""
+    html = JS_PATH.with_name("index.html").read_text()
+    dialog = html.split('<dialog id="chat-confirm-dialog"', 1)[1].split(
+        "</dialog>", 1
+    )[0]
+    assert 'id="chat-confirm-stop-btn"' in dialog
+    chat = JS_PATH.with_name("chat.js").read_text()
+    assert 'var confirmStopBtn = $("chat-confirm-stop-btn")' in chat
+    assert 'confirmStopBtn.addEventListener("click", function () { cancelTurn(true); })' in chat
+
+
 # ── Palette state variables must be removed ──────────────────────────────────
 
 

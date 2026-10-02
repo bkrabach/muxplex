@@ -236,14 +236,14 @@ const REQUIRED_IDS = [
   'chat-confirm-session', 'chat-confirm-text', 'chat-confirm-keys',
   'chat-confirm-cancel-btn', 'chat-confirm-send-btn',
 ];
-const OPTIONAL_IDS = ['chat-live', 'chat-key-hint', 'chat-export-link'];
+const OPTIONAL_IDS = ['chat-live', 'chat-key-hint', 'chat-export-link', 'chat-stop-btn', 'chat-confirm-stop-btn'];
 
 /** Load a fresh copy of chat.js into its own vm context, with its own DOM,
  * localStorage, and fetch stub. Every test gets a brand-new context --
  * chat.js's module state (messages, clientSessionId, statusEl, the
  * confirmation gate...) is closed over per-load, so this is the only way
  * to get real per-test isolation. */
-function loadChatPanel({ fetchImpl, includeCloseBtn = false, sandboxOverrides = {} } = {}) {
+function loadChatPanel({ fetchImpl, includeCloseBtn = false, sandboxOverrides = {}, autoResults = true } = {}) {
   const env = createDomEnvironment();
   const els = {};
 
@@ -265,9 +265,16 @@ function loadChatPanel({ fetchImpl, includeCloseBtn = false, sandboxOverrides = 
 
   const storage = makeLocalStorageStub();
   const fetchCalls = [];
+  let pendingSse;
   const fetchFn = async (url, opts) => {
     fetchCalls.push({ url, opts });
-    return fetchImpl(url, opts, fetchCalls.length);
+    if (url === '/api/agent/browser-tool-results' && autoResults) {
+      pendingSse?.acceptResult(JSON.parse(opts.body));
+      return jsonResponse(200, { ok: true });
+    }
+    const response = await fetchImpl(url, opts, fetchCalls.length);
+    if (url === '/api/agent/chat/completions') pendingSse = response;
+    return response;
   };
 
   const sandbox = {
@@ -287,6 +294,7 @@ function loadChatPanel({ fetchImpl, includeCloseBtn = false, sandboxOverrides = 
     clearTimeout,
     TextEncoder,
     TextDecoder,
+    AbortController,
     // Overridable so a test can inject manually-fireable timers and/or a
     // controllable clock (see makeManualTimers()/FakeClockDate below) --
     // needed to exercise the stall check-in's cumulative-elapsed-time
@@ -416,21 +424,33 @@ async function waitUntil(fn, { timeout = 2000, interval = 5, label = 'condition'
 // ---------------------------------------------------------------------
 
 function sseChunksResponse(chunkObjs) {
+  const encode = (chunks) => new TextEncoder().encode(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join(''));
+  const pending = new Set(chunkObjs.filter((c) => c.muxplex_browser_tool).map((c) => c.muxplex_browser_tool.call_id));
+  const gate = makeGate();
   const raw = chunkObjs.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n';
   const bytes = new TextEncoder().encode(raw);
-  let delivered = false;
+  let step = 0;
   return {
     ok: true,
     status: 200,
+    headers: { get: (key) => key === 'X-Muxplex-Agent-Session-Id' ? 'sdk-session' : 'sdk-run' },
+    acceptResult(result) { pending.delete(result.call_id); if (!pending.size) gate.resolve(); },
     text: async () => raw,
     body: {
       getReader() {
         return {
           async read() {
-            if (delivered) return { done: true, value: undefined };
-            delivered = true;
-            return { done: false, value: bytes };
+            if (!pending.size && step === 0) { step = 3; return { done: false, value: bytes }; }
+            if (step === 0) { step++; return { done: false, value: encode(chunkObjs) }; }
+            if (step === 1) {
+              step++;
+              await gate.promise;
+              return { done: false, value: new TextEncoder().encode(
+                finalAnswerChunks('Done.').map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n') };
+            }
+            return { done: true, value: undefined };
           },
+          async cancel() { gate.resolve(); },
         };
       },
     },
@@ -438,22 +458,17 @@ function sseChunksResponse(chunkObjs) {
 }
 
 function toolCallTurnChunks(toolName, argsObj, callId) {
-  return [
-    {
-      id: 'chunk-1',
-      choices: [{
-        delta: {
-          tool_calls: [{
-            index: 0,
-            id: callId,
-            type: 'function',
-            function: { name: toolName, arguments: JSON.stringify(argsObj) },
-          }],
-        },
-      }],
-    },
-    { id: 'chunk-1', choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
-  ];
+  return [{ muxplex_browser_tool: {
+    version: 1, run_id: 'sdk-run', session_id: 'sdk-session', call_id: callId,
+    result_token: 'test-capability-' + callId, name: toolName, arguments: argsObj,
+    deadline: new Date(Date.now() + 120000).toISOString(),
+  } }];
+}
+
+function resultPayload(panel, index = 0) {
+  const calls = panel.fetchCalls.filter((c) => c.url === '/api/agent/browser-tool-results');
+  assert.ok(calls[index], 'expected an in-turn result POST');
+  return JSON.parse(calls[index].opts.body);
 }
 
 function finalAnswerChunks(text) {
@@ -547,7 +562,8 @@ function hangingSseFetch() {
       return {
         ok: true,
         status: 200,
-        body: { getReader: () => ({ read: () => new Promise(() => {}) }) },
+        headers: { get: (key) => key === 'X-Muxplex-Agent-Session-Id' ? 'sdk-session' : 'sdk-run' },
+        body: { getReader: () => ({ read: () => new Promise(() => {}), cancel: async () => {} }) },
       };
     }
     throw new Error('unexpected fetch url in test: ' + url);
@@ -691,19 +707,16 @@ test('ixl: model-directed guidance never reaches the rendered panel', async () =
   assert.ok(rendered.includes(fenceDetail), 'the technical-detail block must still show the real server response');
 });
 
-test('ixl: the model still receives the full guidance, via the continuation request body', async () => {
+test('ixl: the model still receives full guidance in the same-turn failed result', async () => {
   const fenceDetail = 'Session input is disabled (settings.input_enabled=false)';
   const panel = loadChatPanel({ fetchImpl: makeInputFenceFetch({ fenceDetail }) });
   await driveSendAndConfirm(panel, 'type ls into counter');
 
   const completionsCalls = panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions');
-  assert.strictEqual(completionsCalls.length, 2, 'expected an initial POST and one continuation POST');
-
-  const continuationBody = JSON.parse(completionsCalls[1].opts.body);
-  const toolMessages = continuationBody.messages.filter((m) => m.role === 'tool');
-  assert.ok(toolMessages.length >= 1, 'expected at least one role:"tool" message in the continuation body');
-
-  const combined = toolMessages.map((m) => m.content).join('\n');
+  assert.strictEqual(completionsCalls.length, 1, 'one request; no recursive continuation');
+  const result = resultPayload(panel);
+  assert.equal(result.outcome, 'failed');
+  const combined = result.error;
   assert.match(combined, /TELL THE USER/, 'the model must still receive the guidance -- it was separated, not deleted');
   assert.match(combined, /Do NOT retry this call/);
 });
@@ -1179,13 +1192,8 @@ test('h2f: list_muxplex_sessions marks the browser-focused session with focused:
   panel.els['chat-send-btn']._fire('click');
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
 
-  // Second completions request is the continuation carrying the tool
-  // result -- find the {role:"tool"} message and parse its JSON body.
-  const continuation = completionsRequests[1];
-  assert.ok(continuation, 'expected a continuation request after the tool call');
-  const toolMsg = continuation.messages.find((m) => m.role === 'tool');
-  assert.ok(toolMsg, 'expected a {role:"tool"} message in the continuation');
-  const parsed = JSON.parse(toolMsg.content);
+  assert.equal(completionsRequests.length, 1, 'no recursive request');
+  const parsed = JSON.parse(resultPayload(panel).content);
   const betaEntry = parsed.find((s) => s.name === 'beta');
   const alphaEntry = parsed.find((s) => s.name === 'alpha');
   assert.strictEqual(betaEntry.focused, true, 'the focused session must carry focused:true');
@@ -1208,9 +1216,7 @@ test('h2f: list_muxplex_sessions marks no entry as focused when nothing is open 
   panel.els['chat-send-btn']._fire('click');
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
 
-  const continuation = completionsRequests[1];
-  const toolMsg = continuation.messages.find((m) => m.role === 'tool');
-  const parsed = JSON.parse(toolMsg.content);
+  const parsed = JSON.parse(resultPayload(panel).content);
   assert.ok(parsed.every((s) => s.focused === undefined), 'no entry should be marked focused');
 });
 
@@ -1244,11 +1250,7 @@ test('h2f: the per-turn system prompt honestly reports no single focus on the al
   assert.match(systemMsg.content, /all-sessions dashboard/i);
 });
 
-test('h2f: a second request within the SAME turn re-reads focus live (tool-call round trip)', async () => {
-  // Regression guard for "read live, not a stale snapshot" -- the focus
-  // line is computed once per HTTP request (runTurn() is called again for
-  // the continuation), so a focus change mid-turn is reflected on the very
-  // next request rather than carried over from the first.
+test('h2f: the next user turn re-reads focus, without a recursive request', async () => {
   let focused = 'alpha';
   const { completionsRequests, fetchImpl } = makeListSessionsFetch([
     { name: 'alpha', last_activity_at: 1, created_at: 1, cwd: '/a' },
@@ -1268,7 +1270,10 @@ test('h2f: a second request within the SAME turn re-reads focus live (tool-call 
   panel.els['chat-input'].value = 'hello';
   panel.els['chat-send-btn']._fire('click');
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
-
+  assert.equal(completionsRequests.length, 1);
+  panel.els['chat-input'].value = 'next';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'next turn to finish' });
   const firstSystem = completionsRequests[0].messages.find((m) => m.role === 'system').content;
   const secondSystem = completionsRequests[1].messages.find((m) => m.role === 'system').content;
   assert.match(firstSystem, /"alpha"/);
@@ -1286,8 +1291,8 @@ test('h2f: focus context line is omitted entirely when getFocusedSessionName is 
   panel.els['chat-send-btn']._fire('click');
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
 
-  const systemMsg = completionsRequests[0].messages.find((m) => m.role === 'system').content;
-  assert.doesNotMatch(systemMsg, /Currently in focus/);
+  assert.equal(completionsRequests[0].messages.some((m) => m.role === 'system'), false,
+    'no arbitrary agent instructions when focus hint is unavailable');
 });
 
 // =======================================================================
@@ -1345,17 +1350,13 @@ function jsonResponse(status, body) {
   return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) };
 }
 
-/** Run one full turn for the given panel and return the tool result parsed
- * from the continuation's {role:"tool"} message. */
+/** Run one full turn and inspect the actual callback result POST. */
 async function runToolTurn(panel, completionsRequests, userText) {
   panel.els['chat-input'].value = userText;
   panel.els['chat-send-btn']._fire('click');
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
-  const continuation = completionsRequests[1];
-  assert.ok(continuation, 'expected a continuation request after the tool call');
-  const toolMsg = continuation.messages.find((m) => m.role === 'tool');
-  assert.ok(toolMsg, 'expected a {role:"tool"} message in the continuation');
-  return JSON.parse(toolMsg.content);
+  assert.equal(completionsRequests.length, 1);
+  return JSON.parse(resultPayload(panel).content);
 }
 
 test('9wq: list_muxplex_sessions tags every entry with deviceId/deviceName/remoteId', async () => {
@@ -1474,11 +1475,9 @@ test('9wq: get_muxplex_session_details reports an honest error when the session 
   panel.els['chat-input'].value = 'what is ghost-session showing?';
   panel.els['chat-send-btn']._fire('click');
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
-  // The tool call throws -- chat.js surfaces this as a {role:"tool"} error
-  // result fed back to the model, not a silent empty success.
-  const continuation = completionsRequests[1];
-  const toolMsg = continuation.messages.find((m) => m.role === 'tool');
-  assert.match(toolMsg.content, /not found on this device or on any reachable federated peer/);
+  const result = resultPayload(panel);
+  assert.equal(result.outcome, 'failed');
+  assert.match(result.error, /not found on this device or on any reachable federated peer/);
 });
 
 test('9wq: get_muxplex_session_details refuses to guess when the same name exists on more than one device', async () => {
@@ -1498,12 +1497,12 @@ test('9wq: get_muxplex_session_details refuses to guess when the same name exist
   panel.els['chat-input'].value = 'what is dup showing?';
   panel.els['chat-send-btn']._fire('click');
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
-  const continuation = completionsRequests[1];
-  const toolMsg = continuation.messages.find((m) => m.role === 'tool');
-  assert.match(toolMsg.content, /more than one federated device/);
-  assert.match(toolMsg.content, /peer-a-name/);
-  assert.match(toolMsg.content, /peer-b-name/);
-  assert.match(toolMsg.content, /do not guess/i);
+  const result = resultPayload(panel);
+  assert.equal(result.outcome, 'failed');
+  assert.match(result.error, /more than one federated device/);
+  assert.match(result.error, /peer-a-name/);
+  assert.match(result.error, /peer-b-name/);
+  assert.match(result.error, /do not guess/i);
 });
 
 test('9wq: get_muxplex_session_details surfaces a remote "unreachable" status as data, not a thrown error', async () => {
@@ -1545,7 +1544,7 @@ test('l2y: the status row appears immediately on send, before the fetch resolves
   const gate = makeGate();
   const { completionsRequests, fetchImpl } = makeToolCallFetch(
     'list_muxplex_sessions', {},
-    { '/api/sessions': jsonResponse(200, []) },
+    { '/api/federation/sessions': jsonResponse(200, []) },
   );
   // Delay the FIRST completions response so there's a real window where
   // the send has happened but nothing has come back yet -- exactly the
@@ -1572,7 +1571,7 @@ test('l2y: the status row appears immediately on send, before the fetch resolves
 
   gate.resolve();
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
-  assert.strictEqual(completionsRequests.length, 2);
+  assert.strictEqual(completionsRequests.length, 1);
 });
 
 test('l2y: a turn that goes quiet reads as calm progress, never "no response" / "may have dropped"', async () => {
@@ -2093,4 +2092,374 @@ test('y15: an older frontend build without the element makes no served-model cal
 
   const urls = panel.fetchCalls.map((c) => c.url);
   assert.ok(!urls.includes('/api/agent/served-models'));
+});
+
+// Frozen browser callback v1: real DOM + fetch boundaries, not private hooks.
+const COMPLETIONS = '/api/agent/chat/completions';
+const RESULTS = '/api/agent/browser-tool-results';
+
+async function sendAndWait(panel, text = 'hello') {
+  panel.els['chat-input'].value = text;
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => !panel.els['chat-send-btn'].disabled, { label: 'turn terminal' });
+}
+
+function inputEvents(id = 'input-1', text = 'printf hello', extra = {}) {
+  return toolCallTurnChunks('send_muxplex_session_input',
+    { session_name: 'scratch', text, enter: true, ...extra }, id);
+}
+
+test('v1: newest user only, session header resumes, UI transcript stays, New drops session', async () => {
+  const panel = loadChatPanel({ fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return sseChunksResponse(finalAnswerChunks('answer'));
+    return jsonResponse(200, {});
+  } });
+  await sendAndWait(panel, 'first');
+  await sendAndWait(panel, 'second');
+  const requests = panel.fetchCalls.filter((c) => c.url === COMPLETIONS).map((c) => JSON.parse(c.opts.body));
+  assert.deepEqual(requests[0].muxplex_agent, { protocol: 1, browser_tools: true });
+  assert.deepEqual(requests[1].muxplex_agent, { protocol: 1, browser_tools: true, session_id: 'sdk-session' });
+  assert.deepEqual(requests[1].messages, [{ role: 'user', content: 'second' }]);
+  assert.equal(requests[1].tools, undefined);
+  assert.match(fullText(panel.els['chat-messages']), /first.*answer.*second.*answer/s);
+  panel.els['chat-new-btn']._fire('click');
+  await sendAndWait(panel, 'fresh');
+  assert.equal(JSON.parse(panel.fetchCalls.filter((c) => c.url === COMPLETIONS)[2].opts.body).muxplex_agent.session_id, undefined);
+});
+
+test('v1: raw SDK tool_call observations never execute or create recursive requests', async () => {
+  const raw = { choices: [{ delta: { tool_calls: [{
+    id: 'raw', function: { name: 'send_muxplex_session_input',
+      arguments: JSON.stringify({ session_name: 'scratch', text: 'unsafe' }) },
+  }] }, finish_reason: 'tool_calls' }] };
+  const panel = loadChatPanel({ fetchImpl: async (url) =>
+    url === COMPLETIONS ? sseChunksResponse([raw]) : jsonResponse(200, {}) });
+  await sendAndWait(panel);
+  assert.equal(panel.fetchCalls.filter((c) => c.url === COMPLETIONS).length, 1);
+  assert.equal(panel.fetchCalls.some((c) => /\/input$/.test(c.url) || c.url === RESULTS), false);
+  assert.equal(panel.els['chat-confirm-dialog'].open, false);
+  assert.match(fullText(panel.els['chat-messages']), /incomplete/);
+});
+
+test('v1: duplicate callbacks execute once, SSE keeps rendering while confirmation waits', async () => {
+  const events = inputEvents('once', 'exact command', { keys: ['C-c'], enter: true });
+  const panel = loadChatPanel({ fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return sseChunksResponse([
+      ...events, ...events, { choices: [{ delta: { content: 'progress during confirmation' } }] },
+    ]);
+    if (url === '/api/sessions/scratch/input') return jsonResponse(200, { ok: true, session: 'scratch', snapshot: 'readback' });
+    return jsonResponse(200, {});
+  } });
+  panel.els['chat-input'].value = 'type';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-confirm-dialog'].open);
+  assert.match(fullText(panel.els['chat-messages']), /progress during confirmation/);
+  assert.equal(panel.fetchCalls.some((c) => /\/input$/.test(c.url)), false);
+  assert.equal(panel.els['chat-confirm-text'].textContent, 'exact command');
+  assert.equal(panel.els['chat-confirm-keys'].textContent, 'C-c, then Enter', 'exact wire order');
+  panel.els['chat-confirm-send-btn']._fire('click');
+  await waitUntil(() => !panel.els['chat-send-btn'].disabled);
+  assert.equal(panel.fetchCalls.filter((c) => /\/input$/.test(c.url)).length, 1);
+  assert.deepEqual(JSON.parse(panel.fetchCalls.find((c) => /\/input$/.test(c.url)).opts.body),
+    { text: 'exact command', enter: true, keys: ['C-c'] });
+  const result = resultPayload(panel);
+  assert.equal(result.outcome, 'completed');
+  assert.equal(result.confirmed, true);
+  assert.equal(result.result_token, 'test-capability-once');
+  assert.match(result.content, /readback/);
+  assert.equal(panel.fetchCalls.filter((c) => c.url === RESULTS).length, 1);
+});
+
+test('v1: decline blocks every subsequent typing call in this run, not read-only tools', async () => {
+  const panel = loadChatPanel({ fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return sseChunksResponse([
+      ...inputEvents('denied'), ...inputEvents('again'),
+      ...toolCallTurnChunks('list_muxplex_sessions', {}, 'read'),
+    ]);
+    if (url === '/api/federation/sessions') return jsonResponse(200, []);
+    return jsonResponse(200, {});
+  } });
+  panel.els['chat-input'].value = 'type';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-confirm-dialog'].open);
+  panel.els['chat-confirm-cancel-btn']._fire('click');
+  await waitUntil(() => !panel.els['chat-send-btn'].disabled);
+  assert.equal(panel.fetchCalls.some((c) => /\/input$/.test(c.url)), false);
+  assert.match(resultPayload(panel, 0).error, /User declined/);
+  assert.match(resultPayload(panel, 1).error, /Typing is blocked/);
+  assert.equal(resultPayload(panel, 2).outcome, 'completed');
+  assert.equal(panel.els['chat-confirm-dialog'].open, false);
+});
+
+test('v1: input fence refusal blocks follow-on input and remains a failed result', async () => {
+  const panel = loadChatPanel({ fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return sseChunksResponse([...inputEvents('fence'), ...inputEvents('follow-on')]);
+    if (/\/input$/.test(url)) return jsonResponse(403, { detail: 'Session input is disabled (settings.input_enabled=false)' });
+    return jsonResponse(200, {});
+  } });
+  await driveSendAndConfirm(panel, 'type');
+  assert.equal(panel.fetchCalls.filter((c) => /\/input$/.test(c.url)).length, 1);
+  assert.equal(resultPayload(panel).outcome, 'failed');
+  assert.match(resultPayload(panel, 1).error, /Typing is blocked/);
+  assert.match(fullText(panel.els['chat-messages']), /any session yet/);
+});
+
+test('v1: transport-uncertain input is unknown, never retried, blocks later input', async () => {
+  const panel = loadChatPanel({ fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return sseChunksResponse([...inputEvents('unknown'), ...inputEvents('later')]);
+    if (/\/input$/.test(url)) throw new TypeError('Failed to fetch');
+    return jsonResponse(200, {});
+  } });
+  await driveSendAndConfirm(panel, 'type');
+  assert.equal(resultPayload(panel).outcome, 'unknown');
+  assert.match(resultPayload(panel).error, /Do not retry/);
+  assert.match(resultPayload(panel, 1).error, /Typing is blocked/);
+  assert.equal(panel.fetchCalls.filter((c) => /\/input$/.test(c.url)).length, 1);
+});
+
+test('v1: callbacks run in arrival order, with no parallel HTTP dispatch', async () => {
+  const gate = makeGate();
+  const panel = loadChatPanel({ fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return sseChunksResponse([
+      ...toolCallTurnChunks('get_muxplex_session_details', { session_name: 'first' }, 'first'),
+      ...toolCallTurnChunks('get_muxplex_session_details', { session_name: 'second' }, 'second'),
+    ]);
+    if (url === '/api/sessions/first') { await gate.promise; return jsonResponse(200, { name: 'first' }); }
+    return jsonResponse(200, { name: 'second' });
+  } });
+  panel.els['chat-input'].value = 'read';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.fetchCalls.some((c) => c.url === '/api/sessions/first'));
+  assert.equal(panel.fetchCalls.some((c) => c.url === '/api/sessions/second'), false);
+  gate.resolve();
+  await waitUntil(() => !panel.els['chat-send-btn'].disabled);
+  assert.equal(resultPayload(panel, 0).call_id, 'first');
+  assert.equal(resultPayload(panel, 1).call_id, 'second');
+});
+
+test('v1: Stop and New close modal, abort stream, fence queued callbacks and stale clicks', async () => {
+  // Stop is inside the native modal; header Stop/New are inert in real browsers
+  // while it is open. New is still tested for programmatic abandonment safety.
+  for (const control of ['chat-confirm-stop-btn', 'chat-new-btn']) {
+    const panel = loadChatPanel({ fetchImpl: async (url) => {
+      if (url === COMPLETIONS) return sseChunksResponse([
+        ...inputEvents('cancelled'), ...toolCallTurnChunks('switch_muxplex_session', { session_name: 'later' }, 'later'),
+      ]);
+      return jsonResponse(200, {});
+    } });
+    panel.els['chat-input'].value = 'type';
+    panel.els['chat-send-btn']._fire('click');
+    await waitUntil(() => panel.els['chat-confirm-dialog'].open);
+    panel.els[control]._fire('click');
+    assert.equal(panel.els['chat-confirm-dialog'].open, false);
+    assert.equal(panel.fetchCalls.find((c) => c.url === COMPLETIONS).opts.signal.aborted, true);
+    panel.els['chat-confirm-send-btn']._fire('click'); // late queued click cannot revive consent
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(panel.fetchCalls.some((c) => /\/input$|\/connect$/.test(c.url)), false);
+    assert.equal(panel.fetchCalls.some((c) => c.url === RESULTS), false);
+    assert.equal(panel.els['chat-send-btn'].disabled, false);
+    if (control === 'chat-new-btn') assert.doesNotMatch(fullText(panel.els['chat-messages']), /cancelled|later/);
+  }
+});
+
+test('v1: Stop during issued input says it may have taken effect; old completion cannot taint New', async () => {
+  const gate = makeGate();
+  const panel = loadChatPanel({ fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return sseChunksResponse(inputEvents());
+    if (/\/input$/.test(url)) {
+      await gate.promise; // simulate transport ignoring AbortSignal
+      return jsonResponse(200, { ok: true, snapshot: 'stale issued output' });
+    }
+    return jsonResponse(200, {});
+  } });
+  panel.els['chat-input'].value = 'type';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-confirm-dialog'].open);
+  panel.els['chat-confirm-send-btn']._fire('click');
+  await waitUntil(() => panel.fetchCalls.some((c) => /\/input$/.test(c.url)));
+  panel.els['chat-stop-btn']._fire('click');
+  assert.match(fullText(panel.els['chat-messages']), /already-issued actions may have taken effect/);
+  panel.els['chat-new-btn']._fire('click');
+  gate.resolve();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.doesNotMatch(fullText(panel.els['chat-messages']), /stale issued output/);
+  assert.equal(panel.fetchCalls.some((c) => c.url === RESULTS), false);
+});
+
+test('v1: result refusal is not retried and stops queued actions', async () => {
+  const response = sseChunksResponse([
+    ...toolCallTurnChunks('list_muxplex_sessions', {}, 'result-refused'),
+    ...inputEvents('must-not-run'),
+  ]);
+  const panel = loadChatPanel({ autoResults: false, fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return response;
+    if (url === RESULTS) return jsonResponse(409, { error: 'duplicate' });
+    return jsonResponse(200, []);
+  } });
+  await sendAndWait(panel);
+  assert.equal(panel.fetchCalls.filter((c) => c.url === RESULTS).length, 1);
+  assert.equal(panel.els['chat-confirm-dialog'].open, false);
+  assert.match(fullText(panel.els['chat-messages']), /Do not repeat the action/);
+});
+
+test('v1: typed failure renders its remedy, never records successful stop', async () => {
+  const panel = loadChatPanel({ fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return sseChunksResponse([{ error: {
+      code: 'interrupted_run', message: 'Prior turn was interrupted.', remedy: 'Start a new conversation.',
+    } }]);
+    return jsonResponse(200, {});
+  } });
+  await sendAndWait(panel);
+  assert.match(fullText(panel.els['chat-messages']), /Prior turn was interrupted.*Start a new conversation/s);
+  assert.doesNotMatch(fullText(panel.els['chat-messages']), /worth retrying/i);
+});
+
+test('v1: EOF or DONE without stop, and stop without DONE, are incomplete', async () => {
+  for (const raw of [
+    'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+    'data: [DONE]\n\n',
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+  ]) {
+    const response = sseChunksResponse([]);
+    response.body = { getReader() {
+      let delivered = false;
+      return { read: async () => delivered ? { done: true } :
+        (delivered = true, { done: false, value: new TextEncoder().encode(raw) }),
+      cancel: async () => {} };
+    } };
+    const panel = loadChatPanel({ fetchImpl: async (url) => url === COMPLETIONS ? response : jsonResponse(200, {}) });
+    await sendAndWait(panel);
+    assert.match(fullText(panel.els['chat-messages']), /incomplete/);
+  }
+});
+
+test('v1: callback capability never appears in markdown export, tools still do', async () => {
+  const blobs = [];
+  const panel = loadChatPanel({
+    sandboxOverrides: { Blob: class { constructor(parts) { blobs.push(parts.join('')); } } },
+    fetchImpl: async (url) => {
+      if (url === COMPLETIONS) return sseChunksResponse([
+        ...toolCallTurnChunks('list_muxplex_sessions', {}, 'secret-call'),
+        ...toolCallTurnChunks('get_muxplex_session_details', { session_name: 'scratch' }, 'details'),
+      ]);
+      if (url === '/api/federation/sessions') return jsonResponse(200, []);
+      return jsonResponse(200, { snapshot: 'test-capability-secret-call', name: 'scratch' });
+    },
+  });
+  await sendAndWait(panel);
+  panel.els['chat-export-btn']._fire('click');
+  const record = blobs.join('\n');
+  assert.doesNotMatch(record, /test-capability-secret-call|test-capability-details/);
+  assert.match(record, /list_muxplex_sessions/);
+  assert.match(record, /get_muxplex_session_details/);
+  assert.match(record, /redacted/);
+});
+
+test('v1: cancelled HTTP error body cannot capture or render into a new conversation', async () => {
+  const gate = makeGate();
+  const panel = loadChatPanel({ fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return { ok: false, status: 409, text: async () => {
+      await gate.promise; return JSON.stringify({ error: { code: 'old-run', message: 'abandoned failure' } });
+    } };
+    return jsonResponse(200, {});
+  } });
+  panel.els['chat-input'].value = 'old request';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.fetchCalls.some((c) => c.url === COMPLETIONS));
+  // Let the fetch resolve so runTurn waits on this particular response body.
+  await new Promise((r) => setTimeout(r, 5));
+  panel.els['chat-new-btn']._fire('click');
+  gate.resolve();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.doesNotMatch(fullText(panel.els['chat-messages']), /abandoned failure|old request/);
+  assert.equal(panel.els['chat-send-btn'].disabled, false);
+});
+
+test('v1: a queued callback expired before dispatch never opens confirmation', async () => {
+  const events = inputEvents();
+  events[0].muxplex_browser_tool.deadline = new Date(Date.now() - 1000).toISOString();
+  const panel = loadChatPanel({ fetchImpl: async (url) =>
+    url === COMPLETIONS ? sseChunksResponse(events) : jsonResponse(200, {}) });
+  await sendAndWait(panel);
+  assert.equal(panel.els['chat-confirm-dialog'].open, false);
+  assert.equal(panel.fetchCalls.some((c) => /\/input$/.test(c.url)), false);
+  assert.equal(resultPayload(panel).outcome, 'failed');
+  assert.match(resultPayload(panel).error, /expired before dispatch/);
+});
+
+test('v1: Stop during view validation prevents the later PATCH effect', async () => {
+  const gate = makeGate();
+  const panel = loadChatPanel({ fetchImpl: async (url) => {
+    if (url === COMPLETIONS) return sseChunksResponse(toolCallTurnChunks('switch_muxplex_view', { view: 'all' }, 'view'));
+    if (url === '/api/view') { await gate.promise; return jsonResponse(200, { views: ['all'] }); }
+    return jsonResponse(200, {});
+  } });
+  panel.els['chat-input'].value = 'switch view';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.fetchCalls.some((c) => c.url === '/api/view'));
+  panel.els['chat-stop-btn']._fire('click');
+  gate.resolve();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(panel.fetchCalls.some((c) => c.url === '/api/state'), false);
+});
+
+test('v1: existing session and view selection handlers acknowledge same-turn results', async () => {
+  const panel = loadChatPanel({ fetchImpl: async (url, opts) => {
+    if (url === COMPLETIONS) return sseChunksResponse([
+      ...toolCallTurnChunks('switch_muxplex_session', { session_name: 'scratch' }, 'session'),
+      ...toolCallTurnChunks('switch_muxplex_view', { view: 'work' }, 'view'),
+    ]);
+    if (url === '/api/sessions/scratch/connect') return jsonResponse(200, { active_session: 'scratch', terminal_session: 'scratch' });
+    if (url === '/api/view') return jsonResponse(200, { views: ['all', 'work'] });
+    if (url === '/api/state') {
+      assert.deepEqual(JSON.parse(opts.body), { active_view: 'work' });
+      return jsonResponse(200, { active_view: 'work' });
+    }
+    return jsonResponse(200, {});
+  } });
+  await sendAndWait(panel);
+  assert.equal(resultPayload(panel, 0).outcome, 'completed');
+  assert.equal(JSON.parse(resultPayload(panel, 0).content).active_session, 'scratch');
+  assert.equal(resultPayload(panel, 1).outcome, 'completed');
+  assert.equal(JSON.parse(resultPayload(panel, 1).content).active_view, 'work');
+  assert.equal(panel.fetchCalls.filter((c) => c.url === COMPLETIONS).length, 1);
+});
+
+test('v1: callback with another run/session is refused before any effect', async () => {
+  const events = inputEvents();
+  events[0].muxplex_browser_tool.run_id = 'other-run';
+  const panel = loadChatPanel({ fetchImpl: async (url) => url === COMPLETIONS ? sseChunksResponse(events) : jsonResponse(200, {}) });
+  await sendAndWait(panel);
+  assert.equal(panel.els['chat-confirm-dialog'].open, false);
+  assert.equal(panel.fetchCalls.some((c) => /\/input$/.test(c.url) || c.url === RESULTS), false);
+  assert.match(fullText(panel.els['chat-messages']), /Invalid browser callback/);
+});
+
+test('v1: expiry while modal waits closes it and never dispatches input', async () => {
+  const events = inputEvents();
+  events[0].muxplex_browser_tool.deadline = new Date(Date.now() + 100).toISOString();
+  const panel = loadChatPanel({ fetchImpl: async (url) => url === COMPLETIONS ? sseChunksResponse(events) : jsonResponse(200, {}) });
+  panel.els['chat-input'].value = 'type';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-confirm-dialog'].open);
+  await waitUntil(() => !panel.els['chat-send-btn'].disabled);
+  assert.equal(panel.els['chat-confirm-dialog'].open, false);
+  assert.equal(panel.fetchCalls.some((c) => /\/input$/.test(c.url)), false);
+  assert.equal(resultPayload(panel).outcome, 'failed');
+});
+
+test('v1: UTF-8 and SSE lines survive arbitrary byte boundaries', async () => {
+  const raw = finalAnswerChunks('hello ☃').map((c) => `data: ${JSON.stringify(c)}\r\n\r\n`).join('') + 'data: [DONE]\r\n\r\n';
+  const bytes = new TextEncoder().encode(raw);
+  const response = sseChunksResponse([]);
+  response.body = { getReader() {
+    let index = 0;
+    return { read: async () => index < bytes.length
+      ? { done: false, value: bytes.slice(index, ++index) } : { done: true },
+    cancel: async () => {} };
+  } };
+  const panel = loadChatPanel({ fetchImpl: async (url) => url === COMPLETIONS ? response : jsonResponse(200, {}) });
+  await sendAndWait(panel);
+  assert.match(fullText(panel.els['chat-messages']), /hello ☃/);
+  assert.doesNotMatch(fullText(panel.els['chat-messages']), /incomplete|malformed/);
 });

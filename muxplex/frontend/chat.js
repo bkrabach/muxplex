@@ -227,52 +227,11 @@
     },
   ];
 
-  var SYSTEM_PROMPT =
-    "You are a small assistant embedded in a muxplex dashboard (a web UI for " +
-    "tmux sessions). Every tool you call runs with the logged-in user's own " +
-    "authority -- exactly what they could do by clicking around the UI " +
-    "themselves, never more. muxplex here is FEDERATED: sessions can live on " +
-    "this device or on any configured peer device, and your tools span the " +
-    "whole federation by default -- there is no separate \"ask about the " +
-    "fleet\" step, and you never need to be asked twice to look beyond this " +
-    "device. You have five tools:\n" +
-    "- list_muxplex_sessions: every session across this device AND every " +
-    "federated peer device, each one tagged with which device it's on " +
-    "(deviceId/deviceName/remoteId -- remoteId is null for a session on THIS " +
-    "device). This is your one starting point for \"what sessions do I " +
-    "have\"/\"what's running\" -- always name the device a session is on when " +
-    "you answer, don't just say a name exists. An unreachable/misconfigured " +
-    "peer shows up as its own status entry rather than session data -- " +
-    "report that plainly, it is not a tool failure.\n" +
-    "- get_muxplex_session_details: what's happening inside a specific " +
-    "named session (its output/logs/scrollback) -- works the same whether " +
-    "that session is local or on a federated peer; you don't need to figure " +
-    "out which, the tool does. If a session name turns out to exist on more " +
-    "than one device, you'll be asked to disambiguate with the deviceId " +
-    "list_muxplex_sessions showed you -- never guess which one.\n" +
-    "- switch_muxplex_session: make a named session the dashboard's active " +
-    "one. LOCAL-ONLY -- if list_muxplex_sessions showed the session on a " +
-    "different device, tell the user to open it from that device's own " +
-    "dashboard instead of calling this.\n" +
-    "- switch_muxplex_view: change which view filter is active (\"all\", " +
-    "\"hidden\", or a configured view name).\n" +
-    "- send_muxplex_session_input: type text/keys into a session's terminal " +
-    "-- real remote code execution, fenced server-side and OFF by default. " +
-    "If it's disabled you will get a real 403 back. Never retry it and never " +
-    "invent a way around it -- but do NOT stop at \"no workaround\" either: " +
-    "the 403 you get back explains which of the two fences refused, names the " +
-    "settings file and the two settings that control it, and says that only a " +
-    "local operator (often the person you are talking to) can change it. Pass " +
-    "that on in plain language. Every call " +
-    "ALSO pauses for a human confirmation click in the browser first, with " +
-    "no way to skip or pre-approve it; if declined, tell the user rather " +
-    "than retrying the same call.\n" +
-    "If the user names a session you haven't seen yet, call " +
-    "list_muxplex_sessions first to confirm its exact name (and which " +
-    "device it's on) before acting on it. Keep answers short.";
-
   var clientSessionId = null;
-  var messages = []; // OpenAI-style chat messages for the CURRENT conversation
+  var agentSessionId = null; // durable SDK session, never reconstructed from UI history
+  var messages = []; // presentation only; never POST imported tool/assistant history
+  var activeTurn = null;
+  var captureSecrets = [];
 
   var panelEl, messagesEl, inputEl, sendBtn, newBtn, openBtn, exportBtn, exportLinkEl;
   // muxplex-fx1: the "Agent isn't set up" gate -- see checkAgentGate()/
@@ -311,19 +270,9 @@
   // export writes a local .json file via a Blob object URL, never a
   // network request. No telemetry, no auto-upload.
   //
-  // Every event carries `turn` (index of the user message it belongs to)
-  // and `request` (index of the HTTP round trip to
-  // /api/agent/chat/completions within that turn -- a turn makes one
-  // round trip per model/tool-call cycle) so a reader can regroup the flat
-  // log by conversation structure without this code having to build and
-  // maintain a parallel tree in real time. `client_session_id` (sent as
-  // X-Client-Session-Id, forwarded verbatim by muxplex's proxy -- see
-  // main.py's agent_chat_completions_proxy) is the thread an engineer
-  // pulls to line this record up against the amplifier-agent sidecar's own
-  // journal (`journalctl -u amplifier-agent-http`), which logs the same
-  // string on every "chat-completion start" line, plus a per-request
-  // chunk_id captured below from each SSE stream's first chunk -- a
-  // tighter, single-request correlator than the session id alone.
+  // Every event carries `turn` and `request`. v1 makes exactly one chat
+  // request per user turn; callbacks/results stay inside that stream.
+  // client_session_id and the wire chunk id remain non-secret correlators.
   var CAPTURE_MAX_STRING = 20000; // cap any single captured string (tool results carry terminal scrollback)
   var CAPTURE_MAX_EVENTS = 5000; // safety cap on total events per conversation
   var captureEvents = [];
@@ -340,6 +289,7 @@
    * drop data; always say exactly how much was cut and from where. */
   function truncateForCapture(str) {
     if (typeof str !== "string") return str;
+    str = scrubCapture(str);
     if (str.length <= CAPTURE_MAX_STRING) return str;
     return str.slice(0, CAPTURE_MAX_STRING) +
       "\n...[chat panel capture: truncated " + (str.length - CAPTURE_MAX_STRING) + " more characters]";
@@ -365,10 +315,30 @@
     }
     var evt = Object.assign(
       { seq: captureSeq++, ts: nowIso(), t_ms: Math.round(performance.now()), turn: turnIndex, request: requestIndex, type: type },
-      fields || {}
+      scrubCapture(fields || {})
     );
     captureEvents.push(evt);
     return evt;
+  }
+
+  // Callback capabilities must not survive in capture objects, raw JSON strings,
+  // console hooks, or either export format. Scrub before retaining, not after.
+  function scrubCapture(value) {
+    if (typeof value === "string") {
+      captureSecrets.forEach(function (secret) {
+        value = value.split(secret).join("[redacted callback capability]");
+      });
+      return value.replace(/("result_token"\s*:\s*")[^"]*"/g, '$1[redacted]"');
+    }
+    if (Array.isArray(value)) return value.map(scrubCapture);
+    if (value && typeof value === "object") {
+      var copy = {};
+      Object.keys(value).forEach(function (key) {
+        copy[key] = key === "result_token" ? "[redacted]" : scrubCapture(value[key]);
+      });
+      return copy;
+    }
+    return value;
   }
 
   /** Synchronous snapshot of app state visible from this tab right now --
@@ -464,6 +434,11 @@
    * naturally out of executeToolCall) is unchanged by this wrapper. */
   async function apiFetch(method, url, options) {
     options = options || {};
+    var execution = options.execution;
+    if (execution) requireLiveExecution(execution);
+    options = Object.assign({}, options);
+    delete options.execution;
+    if (execution) options.signal = execution.controller.signal;
     var startedAt = performance.now();
     var requestBody = options.body != null ? String(options.body) : null;
     var resp = null;
@@ -471,7 +446,7 @@
     var transportErr = null;
     try {
       resp = await fetch(url, Object.assign({ method: method }, options));
-      text = await resp.text().catch(function () { return ""; });
+      text = await resp.text();
     } catch (fetchErr) {
       transportErr = fetchErr;
     }
@@ -480,7 +455,7 @@
     if (!transportErr && text) {
       try { json = JSON.parse(text); } catch (e) { /* not JSON -- leave undefined */ }
     }
-    capPush("network_call", {
+    if (!execution || activeTurn === execution.turn) capPush("network_call", {
       method: method,
       url: url,
       request_body: requestBody ? truncateForCapture(requestBody) : null,
@@ -533,10 +508,8 @@
   //     event per streamed token) and carry nothing the concatenated
   //     assistant text does not already say. Collapsed to a count, with the
   //     chunk id kept -- the chunk id is the correlator, not the chunks.
-  //   * The re-POSTed message history on each continuation request. The
-  //     provider requires the whole conversation on every round trip, so the
-  //     JSON contains turn 1 verbatim once per subsequent request. Collapsed
-  //     to a role/size manifest; the turns themselves are rendered above it.
+  //   * Request messages become a role/size manifest; user turns themselves
+  //     are rendered above it. No imported SDK/tool history is retained.
   //   * The response body of SUCCESSFUL HTTP calls, clipped at 1200 chars
   //     with a visible marker. The tool result derived from it is printed in
   //     full right below, unclipped -- that is what the model actually saw.
@@ -650,10 +623,7 @@
     L.push("- **User agent:** " + navigator.userAgent);
     L.push("- **Events captured:** " + evs.length + (captureCapped ? " (CAPPED -- buffer full, later events dropped)" : ""));
     L.push("");
-    L.push("> To line this up against the agent sidecar's own log, grep its journal");
-    L.push("> (`journalctl -u amplifier-agent-http`) for the conversation id above --");
-    L.push("> it appears on every `chat-completion start` line -- or for the per-request");
-    L.push("> chunk id printed under each request below, which is tighter.");
+    L.push("> Correlate the conversation id or per-request chunk id with muxplex's server log.");
     L.push("");
     L.push("> Nothing here was transmitted anywhere. This file was written locally");
     L.push("> from this browser tab, on an explicit click.");
@@ -759,12 +729,12 @@
 
         // Tool calls: stitch each requested call to its result and to the
         // HTTP traffic recorded between them.
-        var requested = rev.filter(function (e) { return e.type === "tool_calls_requested"; })[0];
-        if (requested) {
+        var requested = rev.filter(function (e) { return e.type === "tool_calls_requested"; });
+        if (requested.length) {
           var results = rev.filter(function (e) { return e.type === "tool_call_result"; });
           var nets = rev.filter(function (e) { return e.type === "network_call"; });
           var netIdx = 0;
-          requested.tool_calls.forEach(function (c) {
+          requested.reduce(function (calls, e) { return calls.concat(e.tool_calls); }, []).forEach(function (c) {
             var call = { id: c.id, name: c.name, arguments_raw: c.arguments_raw, _http: [], _result: null };
             var res = results.filter(function (e) { return e.tool_call_id === c.id; })[0];
             call._result = res || null;
@@ -1288,6 +1258,8 @@
   }
 
   function newConversation() {
+    cancelTurn(false);
+    agentSessionId = null;
     clientSessionId = "chat-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
     messages = [];
     // A pending attachment belongs to the conversation being abandoned.
@@ -1299,6 +1271,7 @@
     captureEvents = [];
     captureSeq = 0;
     captureCapped = false;
+    captureSecrets = [];
     turnIndex = -1;
     requestIndex = -1;
     appendEmptyState();
@@ -1950,6 +1923,13 @@
     var m403 = /HTTP 403/.test(msg);
     var m404 = /HTTP 404/.test(msg);
     var m5xx = /HTTP 5\d\d/.test(msg);
+    if (err && err.agentCode) {
+      return { headline: err.message, remedy: err.agentRemedy || null };
+    }
+    if (/effect is unknown|not acknowledged/i.test(msg)) {
+      return { headline: "The action may have taken effect; it was not acknowledged.",
+        remedy: "Inspect the session before sending anything else. This input will not be retried." };
+    }
 
     // A mid-stream SSE error frame (muxplex-695: name === "__stream__",
     // see runTurn()'s `if (chunk.error)` handling). muxplex's own proxy
@@ -2160,8 +2140,8 @@
     var enter = typeof spec.enter === "boolean" ? spec.enter : true;
     var keys = Array.isArray(spec.keys) ? spec.keys : [];
     var parts = [];
-    if (enter) parts.push("Enter");
     parts = parts.concat(keys);
+    if (enter) parts.push("Enter"); // wire order is text -> keys -> enter
     if (!parts.length) return "nothing else (no Enter, no keys)";
     return parts.join(", then ");
   }
@@ -2218,8 +2198,7 @@
     try {
       return JSON.parse(payload);
     } catch (e) {
-      appendError("chat panel: could not parse SSE chunk: " + payload);
-      return null;
+      throw new Error("chat panel: malformed SSE data; response incomplete.");
     }
   }
 
@@ -2245,15 +2224,15 @@
    *    every candidate device so the caller can retry with an explicit
    *    deviceId, per get_muxplex_session_details' own tool description.
    */
-  async function fetchSessionDetails(sessionName, lines, deviceId) {
+  async function fetchSessionDetails(sessionName, lines, deviceId, execution) {
     var query = lines ? "?lines=" + encodeURIComponent(lines) : "";
 
     if (deviceId) {
-      return await fetchRemoteSessionDetails(deviceId, sessionName, query);
+      return await fetchRemoteSessionDetails(deviceId, sessionName, query, execution);
     }
 
     var localUrl = "/api/sessions/" + encodeURIComponent(sessionName);
-    var localResp = await apiFetch("GET", localUrl + query);
+    var localResp = await apiFetch("GET", localUrl + query, { execution: execution });
     if (localResp.ok) {
       var detail = localResp.json;
       return JSON.stringify({
@@ -2276,7 +2255,7 @@
     }
 
     // Not local -- search the federation for it before giving up.
-    var fedResp = await apiFetch("GET", "/api/federation/sessions");
+    var fedResp = await apiFetch("GET", "/api/federation/sessions", { execution: execution });
     if (!fedResp.ok) {
       throw new Error(
         "GET /api/federation/sessions failed: HTTP " + fedResp.status +
@@ -2304,7 +2283,7 @@
         "with the device_id of the one you mean -- do not guess."
       );
     }
-    return await fetchRemoteSessionDetails(matches[0].deviceId, sessionName, query);
+    return await fetchRemoteSessionDetails(matches[0].deviceId, sessionName, query, execution);
   }
 
   /** Fetch a remote session's details via the federation proxy
@@ -2314,10 +2293,10 @@
    * list_muxplex_sessions' status entries. A real 404 (session genuinely
    * gone on an otherwise-reachable remote) still throws, matching the
    * local path's own 404 behavior. */
-  async function fetchRemoteSessionDetails(deviceId, sessionName, query) {
+  async function fetchRemoteSessionDetails(deviceId, sessionName, query, execution) {
     var url = "/api/federation/" + encodeURIComponent(deviceId) +
       "/sessions/" + encodeURIComponent(sessionName);
-    var resp = await apiFetch("GET", url + query);
+    var resp = await apiFetch("GET", url + query, { execution: execution });
     if (!resp.ok) {
       throw new Error(
         "GET " + url + " failed: HTTP " + resp.status + (resp.text ? " -- " + resp.text : "")
@@ -2333,7 +2312,8 @@
    * adds any credential or server-side proxying -- the agent sidecar still
    * cannot reach muxplex; only this browser code, as the logged-in user,
    * can. */
-  async function executeToolCall(toolCall) {
+  async function executeToolCall(toolCall, execution) {
+    if (execution) requireLiveExecution(execution);
     var name = toolCall.function && toolCall.function.name;
 
     var args = {};
@@ -2361,7 +2341,7 @@
       // federation_sessions()'s own docstring), so there is no regression
       // for the common unfederated case, only a real (bounded, cached,
       // circuit-broken) fan-out cost when federation is actually configured.
-      var resp = await apiFetch("GET", "/api/federation/sessions");
+      var resp = await apiFetch("GET", "/api/federation/sessions", { execution: execution });
       if (!resp.ok) {
         throw new Error("GET /api/federation/sessions failed: HTTP " + resp.status);
       }
@@ -2413,7 +2393,7 @@
           "chat panel: get_muxplex_session_details requires a session_name argument"
         );
       }
-      return await fetchSessionDetails(args.session_name, args.lines, args.device_id);
+      return await fetchSessionDetails(args.session_name, args.lines, args.device_id, execution);
     }
 
     if (name === "switch_muxplex_session") {
@@ -2423,7 +2403,7 @@
         );
       }
       var connectUrl = "/api/sessions/" + encodeURIComponent(args.session_name) + "/connect";
-      var connectResp = await apiFetch("POST", connectUrl);
+      var connectResp = await effectFetch("POST", connectUrl, {}, execution);
       if (!connectResp.ok) {
         // Fail loud with muxplex's real error (e.g. its own 404 "Session 'x'
         // not found") -- no silent catch, no fake-success result.
@@ -2433,6 +2413,10 @@
         );
       }
       var connectResult = connectResp.json;
+      if (!connectResult || typeof connectResult.active_session !== "string") {
+        if (execution) execution.uncertain = true;
+        throw new Error("Session switch was issued but not acknowledged; its effect is unknown.");
+      }
       return JSON.stringify({
         active_session: connectResult.active_session,
         terminal_session: connectResult.terminal_session,
@@ -2448,7 +2432,7 @@
       // error (it just resolves to zero visible sessions), which would be a
       // silent, confusing failure disguised as success. Fail loud here
       // instead, naming the exact valid options.
-      var viewResp = await apiFetch("GET", "/api/view");
+      var viewResp = await apiFetch("GET", "/api/view", { execution: execution });
       if (!viewResp.ok) {
         throw new Error(
           "GET /api/view failed: HTTP " + viewResp.status + (viewResp.text ? " -- " + viewResp.text : "")
@@ -2462,20 +2446,27 @@
           ". Valid views right now: " + validViews.join(", ")
         );
       }
-      var patchResp = await apiFetch("PATCH", "/api/state", {
+      var patchResp = await effectFetch("PATCH", "/api/state", {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ active_view: args.view }),
-      });
+      }, execution);
       if (!patchResp.ok) {
         throw new Error(
           "PATCH /api/state failed: HTTP " + patchResp.status + (patchResp.text ? " -- " + patchResp.text : "")
         );
       }
       var patchResult = patchResp.json || {};
+      if (patchResult.active_view !== args.view) {
+        if (execution) execution.uncertain = true;
+        throw new Error("View switch was issued but not acknowledged; its effect is unknown.");
+      }
       return JSON.stringify({ active_view: patchResult.active_view });
     }
 
     if (name === "send_muxplex_session_input") {
+      if (execution && execution.turn.typingBlocked) {
+        throw new Error("Typing is blocked for this run after a declined, refused, or uncertain input. Do not retry.");
+      }
       if (!args.session_name || typeof args.session_name !== "string") {
         throw new Error(
           "chat panel: send_muxplex_session_input requires a session_name argument"
@@ -2486,6 +2477,14 @@
         enter: typeof args.enter === "boolean" ? args.enter : true,
         keys: Array.isArray(args.keys) ? args.keys : [],
       };
+      if ((args.text !== undefined && typeof args.text !== "string") ||
+          (args.enter !== undefined && typeof args.enter !== "boolean") ||
+          (args.keys !== undefined && (!Array.isArray(args.keys) ||
+            args.keys.some(function (key) {
+              return TOOLS[4].function.parameters.properties.keys.items.enum.indexOf(key) === -1;
+            })))) {
+        throw new Error("chat panel: invalid terminal input arguments; nothing was sent.");
+      }
 
       // Nothing-fires-without-a-human-beat gate. This is the ONE tool that
       // reaches this line every single time it's called -- there is no path
@@ -2510,8 +2509,12 @@
       var userConfirmed = await requestInputConfirmation(
         args.session_name, inputBody.text, inputBody
       );
+      // Stop/New/deadline may have closed the dialog. A stale affirmative
+      // click must never authorize a write in a different or expired turn.
+      if (execution) requireLiveExecution(execution);
       capPush("confirmation_resolved", { tool_call_id: toolCall.id, confirmed: userConfirmed });
       if (!userConfirmed) {
+        if (execution) execution.turn.typingBlocked = true;
         appendSystemLine(
           "cancelled: you declined to send input to session \"" + args.session_name + "\""
         );
@@ -2520,16 +2523,21 @@
           "'. Do not retry this exact call in this turn -- tell the user it was declined."
         );
       }
+      if (execution) execution.confirmed = true;
       appendSystemLine(
         "sending " + JSON.stringify(inputBody.text) + " to session \"" + args.session_name + "\"..."
       );
 
       var inputUrl = "/api/sessions/" + encodeURIComponent(args.session_name) + "/input";
-      var inputResp = await apiFetch("POST", inputUrl, {
+      var inputResp = await effectFetch("POST", inputUrl, {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(inputBody),
-      });
+      }, execution);
       if (!inputResp.ok) {
+        if (execution) {
+          execution.turn.typingBlocked = true;
+          execution.uncertain = inputResp.status >= 500;
+        }
         // THIS is the fenced endpoint. A 403 here is muxplex's fence doing
         // exactly its job, and the server's real text is always surfaced
         // verbatim. This code never retries and never tries to widen the
@@ -2590,6 +2598,10 @@
         );
       }
       var inputResult = inputResp.json || {};
+      if (inputResult.ok !== true) {
+        if (execution) { execution.turn.typingBlocked = true; execution.uncertain = true; }
+        throw new Error("Terminal input was issued but not acknowledged. Do not retry; inspect the session first.");
+      }
       return JSON.stringify({
         ok: inputResult.ok,
         session: inputResult.session,
@@ -2604,9 +2616,8 @@
    * currently open/zoomed-in in THIS browser, so it can answer a question
    * like "what about the one in focus?" without the user having to name a
    * session. Built fresh on every call -- see runTurn()'s call site, which
-   * reads this at the top of EVERY request in a turn (including tool-call
-   * continuations), never once at panel-open time -- so a view switched
-   * mid-conversation is reflected on the very next request, not the next
+   * reads this at the top of each new user request, never at panel-open
+   * time -- so a view switched mid-conversation is reflected on the next
    * time the panel happens to reopen.
    *
    * Honest by construction: if app.js's getFocusedSessionName() isn't
@@ -2617,57 +2628,208 @@
     if (typeof window.getFocusedSessionName !== "function") return null;
     var name = window.getFocusedSessionName();
     if (name) {
-      return "Currently in focus: the dashboard has session \"" + name +
+      return "Currently in focus: the dashboard has session \"" + String(name).slice(0, 256) +
         "\" open/expanded right now.";
     }
     return "Currently in focus: no single session -- the user is on the " +
       "all-sessions dashboard overview (nothing is expanded/zoomed in).";
   }
 
-  /** Run one turn of the conversation against /api/agent/chat/completions,
-   * streaming the SSE response into the panel. If the model calls one or
-   * more tools, executes EACH of them in the browser (in call order) and
-   * recurses to continue the turn -- this recursion IS the host-tool round
-   * trip described in amplifier-agent/docs/spec/http-face.md's "Host-provided
-   * tools" section. A tool-calls turn must produce one {role:"tool"} message
-   * per tool_call_id, not just the first, or the continuation request is
-   * malformed and the provider will reject it. */
-  async function runTurn() {
+  function turnIsLive(turn) {
+    return activeTurn === turn && !turn.controller.signal.aborted && !turn.closed;
+  }
+
+  function requireLiveExecution(execution) {
+    if (!turnIsLive(execution.turn) || execution.controller.signal.aborted ||
+        Date.now() >= execution.deadline) {
+      throw new Error("Browser action cancelled or expired before dispatch.");
+    }
+  }
+
+  async function effectFetch(method, url, options, execution) {
+    if (execution) {
+      requireLiveExecution(execution);
+      execution.effectIssued = true; // cancellation cannot undo this dispatch
+      options = Object.assign({}, options, { execution: execution });
+    }
+    try {
+      var response = await apiFetch(method, url, options);
+      if (execution && response.status >= 500) execution.uncertain = true;
+      return response;
+    } catch (err) {
+      if (execution) execution.uncertain = true;
+      throw err; // never retry an uncertain write
+    }
+  }
+
+  function cancelTurn(showNotice) {
+    var turn = activeTurn;
+    if (!turn) return;
+    turn.closed = true; // fence queued effects before resolving the dialog
+    turn.controller.abort();
+    resolveConfirm(false);
+    if (turn.reader) turn.reader.cancel().catch(function () {});
+    activeTurn = null;
+    clearStatus();
+    if (sendBtn) sendBtn.disabled = false;
+    if (turn.stopBtn) turn.stopBtn.classList.add("hidden");
+    if (showNotice) {
+      appendSystemLine("Stopped. Queued actions were cancelled; already-issued actions may have taken effect. Inspect the session before retrying input.");
+      capPush("turn_cancelled", { issued_effects_may_remain: true });
+    }
+  }
+
+  function typedAgentError(error) {
+    var err = new Error(error.message || "The agent could not complete this turn.");
+    // v1 code/message/remedy wins. Legacy type-only setup refusals still use
+    // the established agentNotConfigured classifier and Settings remedy.
+    err.agentCode = error.code;
+    err.agentRemedy = error.remedy;
+    return err;
+  }
+
+  /** Only muxplex_browser_tool is executable. SDK tool_call deltas are
+   * observations, never another authority to run the same effect. Mark seen
+   * before queueing so duplicate events cannot open a second confirmation. */
+  function queueBrowserTool(turn, event) {
+    if (typeof event.result_token === "string" && event.result_token) {
+      captureSecrets.push(event.result_token);
+    }
+    if (!turnIsLive(turn)) return;
+    if (event.version !== 1 || event.run_id !== turn.runId ||
+        event.session_id !== turn.sessionId ||
+        typeof event.call_id !== "string" || !event.call_id ||
+        typeof event.result_token !== "string" || !event.result_token ||
+        !Number.isFinite(Date.parse(event.deadline))) {
+      throw typedAgentError({ code: "browser_protocol_error",
+        message: "Invalid browser callback; no action was dispatched.",
+        remedy: "Reload the page and start a new conversation." });
+    }
+    if (turn.calls.has(event.call_id)) return;
+    var call = {
+      id: event.call_id,
+      function: { name: event.name, arguments: typeof event.arguments === "string"
+        ? event.arguments : JSON.stringify(event.arguments) },
+    };
+    var execution = { turn: turn, deadline: Date.parse(event.deadline), controller: new AbortController(),
+      effectIssued: false, uncertain: false, confirmed: false };
+    turn.calls.set(event.call_id, execution);
+    capPush("tool_calls_requested", { tool_calls: [{
+      id: call.id, name: event.name, arguments_raw: call.function.arguments,
+    }] });
+    // No await here: the SSE pump must progress during an open modal.
+    turn.queue = turn.queue.then(async function () {
+      if (!turnIsLive(turn)) return;
+      var startedAt = performance.now();
+      var result = { run_id: event.run_id, call_id: event.call_id,
+        result_token: event.result_token };
+      var abortAction = function () { execution.controller.abort(); };
+      turn.controller.signal.addEventListener("abort", abortAction, { once: true });
+      var timeout = setTimeout(function () {
+        // A confirmation waiting past the callback deadline is a failed action,
+        // not consent. Other requests remain subject to their dispatch fence.
+        execution.controller.abort();
+        if (turnIsLive(turn)) resolveConfirm(false);
+      }, Math.max(0, execution.deadline - Date.now()));
+      try {
+        requireLiveExecution(execution);
+        var args = JSON.parse(call.function.arguments || "{}");
+        if (!args || typeof args !== "object" || Array.isArray(args)) {
+          throw new Error("Browser tool arguments must be an object.");
+        }
+        var action = describeToolAction(event.name, args);
+        setStatus(action.kind, action.text + "...");
+        armStallWatch(action.text.charAt(0).toLowerCase() + action.text.slice(1));
+        result.content = await executeToolCall(call, execution);
+        result.outcome = "completed";
+        if (event.name === "send_muxplex_session_input") result.confirmed = execution.confirmed;
+        if (turnIsLive(turn)) {
+          clearStatus();
+          appendToolResult(event.name, result.content);
+        }
+      } catch (err) {
+        result.outcome = execution.uncertain ? "unknown" : "failed";
+        result.error = execution.uncertain
+          ? "Action was issued but its effect is unknown. Do not retry; inspect the session first."
+          : String(err.message || err);
+        if (event.name === "send_muxplex_session_input" && execution.effectIssued) {
+          turn.typingBlocked = true;
+        }
+        if (turnIsLive(turn)) {
+          clearStatus();
+          appendToolError(event.name, result.error, err);
+        }
+      } finally {
+        clearTimeout(timeout);
+        turn.controller.signal.removeEventListener("abort", abortAction);
+      }
+      if (!turnIsLive(turn)) return; // disconnect settles server callback; never replay
+      execution.settled = true;
+      capPush("tool_call_result", {
+        tool_call_id: call.id, name: event.name, arguments_raw: call.function.arguments,
+        ok: result.outcome === "completed", outcome: result.outcome,
+        result_raw: truncateForCapture(result.content), error: result.error,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
+      // Deliberately not apiFetch: its raw-body capture would retain the capability.
+      // One result POST only, including on 409/410/transport failure.
+      try {
+        var resultTimeout = setTimeout(function () {
+          if (turnIsLive(turn)) {
+            cancelTurn(false);
+            appendToolError("__request__", "Browser result acknowledgment timed out; do not repeat the action.",
+              typedAgentError({ code: "browser_result_timeout", message: "Browser result acknowledgment timed out.",
+                remedy: "Inspect the session before retrying input, then start a new conversation." }));
+          }
+        }, 10000); // bounded acknowledgment; no automatic resend
+        var response = await fetch("/api/agent/browser-tool-results", {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(result), signal: turn.controller.signal,
+        });
+        if (!response.ok) {
+          throw typedAgentError({ code: "browser_result_refused",
+            message: "Browser result was refused (HTTP " + response.status + ").",
+            remedy: "Do not repeat the action. Inspect the session, then start a new conversation." });
+        }
+      } catch (err) {
+        if (turnIsLive(turn)) {
+          turn.failure = err;
+          cancelTurn(false); // close stream and fence every queued action
+          appendToolError("__request__", String(err.message || err), err);
+          capPush("turn_error", { error: String(err.message || err) });
+        }
+      } finally {
+        clearTimeout(resultTimeout);
+      }
+    });
+  }
+
+  /** One user request, one SSE pump, one serial action queue. The server owns
+   * the durable transcript and continues its turn after each callback result. */
+  async function runTurn(turn, userMessage) {
     requestIndex++;
     var requestStartedAt = performance.now();
     setStatus("wait", "Thinking about what to do next...");
     armStallWatch("waiting for the agent to respond");
-    // muxplex-h2f: read live, right before this specific request is built --
-    // not cached from an earlier point in the turn -- so a view switched
-    // between tool-call round trips is never stale by more than one request.
     var focusLine = focusContextLine();
-    var systemPromptForRequest = focusLine ? SYSTEM_PROMPT + "\n\n" + focusLine : SYSTEM_PROMPT;
     var body = {
       model: MODEL,
       stream: true,
-      messages: [{ role: "system", content: systemPromptForRequest }].concat(messages),
-      tools: TOOLS,
+      messages: (focusLine ? [{ role: "system", content: focusLine }] : []).concat([userMessage]),
+      muxplex_agent: { protocol: 1, browser_tools: true },
     };
+    if (agentSessionId) body.muxplex_agent.session_id = agentSessionId;
 
     capPush("request_start", {
       url: "/api/agent/chat/completions",
       model: MODEL,
       tool_names: TOOLS.map(function (t) { return t.function.name; }),
       client_session_id: clientSessionId,
-      // The exact messages POSTed, not just a count -- includes any prior
-      // tool results now folded into history. Content is truncated
-      // per-message (terminal scrollback lives here after a
-      // get_muxplex_session_details/send_muxplex_session_input round trip),
-      // never dropped wholesale.
-      // muxplex-1i9: image content-blocks are redacted here, not truncated.
-      // Truncating base64 would still put thousands of bytes of a possibly
-      // secret-bearing screenshot into a file people paste into issues.
       messages: body.messages.map(function (m) {
         return {
           role: m.role,
           content: redactContentForCapture(m.content),
-          tool_call_id: m.tool_call_id,
-          tool_calls: m.tool_calls,
         };
       }),
     });
@@ -2682,11 +2844,14 @@
           "X-Client-Session-Id": clientSessionId,
         },
         body: JSON.stringify(body),
+        credentials: "same-origin",
+        signal: turn.controller.signal,
       });
     } catch (fetchErr) {
       transportErr = fetchErr;
     }
 
+    if (!turnIsLive(turn)) return;
     if (transportErr) {
       capPush("request_error", {
         transport_error: String(transportErr && transportErr.message || transportErr),
@@ -2697,6 +2862,7 @@
 
     if (!resp.ok || !resp.body) {
       var errText = await resp.text().catch(function () { return ""; });
+      if (!turnIsLive(turn)) return; // an abandoned error body belongs to the old conversation
       capPush("request_error", {
         http_status: resp.status,
         body_raw: truncateForCapture(errText),
@@ -2710,205 +2876,110 @@
         // from its wording. Attached the same way the 403 fence classifier
         // carries err.inputFence -- humaniseToolError() prefers a structured
         // field over anything re-parsed out of a message.
-        { agentNotConfigured: isAgentNotConfiguredBody(errText) });
+        Object.assign(typedAgentError((function () {
+          try { return JSON.parse(errText).error || {}; } catch (e) { return {}; }
+        })()), { agentNotConfigured: isAgentNotConfiguredBody(errText) }));
       return;
     }
 
+    turn.sessionId = resp.headers && resp.headers.get("X-Muxplex-Agent-Session-Id");
+    turn.runId = resp.headers && resp.headers.get("X-Muxplex-Agent-Run-Id");
+    if (!turn.sessionId || !turn.runId) {
+      throw typedAgentError({ code: "browser_protocol_error",
+        message: "The server did not return browser protocol session/run headers.",
+        remedy: "Reload the page and start a new conversation." });
+    }
+    agentSessionId = turn.sessionId;
+
     var reader = resp.body.getReader();
+    turn.reader = reader;
     var decoder = new TextDecoder();
     var buf = "";
     var assistantText = "";
     var assistantBubble = null;
-    var toolCallsByIndex = {}; // key -> {id, type, function:{name, arguments}, __seq}
-    var toolCallSeq = 0; // insertion order -- keys are not reliably numeric, see below
     var finishReason = null;
+    var sawDone = false;
+    var terminalSuccess = false;
     var sseChunkId = null; // this request's chunk id, from the SSE wire -- the sidecar's own
     // per-request log correlator (see amplifier_agent_http's "chat-completion
     // start chunk_id=%s ... client_session_id=%r" log line).
 
-    for (;;) {
-      var res = await reader.read();
-      if (res.done) break;
-      buf += decoder.decode(res.value, { stream: true });
+    try {
+      for (;;) {
+        var res = await reader.read();
+        if (!turnIsLive(turn)) return;
+        buf += res.done ? decoder.decode() : decoder.decode(res.value, { stream: true });
+        var lines = buf.split("\n");
+        buf = lines.pop();
+        if (res.done && buf.trim()) { lines.push(buf); buf = ""; }
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i].trim();
+          if (line === "data: [DONE]") { sawDone = true; continue; }
+          var chunk = parseSseLine(line);
+          if (!chunk) continue;
+          if (chunk.muxplex_browser_tool) {
+            queueBrowserTool(turn, chunk.muxplex_browser_tool);
+          }
+          if (chunk.id && !sseChunkId) sseChunkId = chunk.id;
+          capPush("sse_chunk", { chunk: chunk });
+          if (chunk.error) {
+            capPush("request_error", {
+              sse_error: chunk.error,
+              duration_ms: Math.round(performance.now() - requestStartedAt),
+            });
+            throw typedAgentError(chunk.error);
+          }
 
-      var lines = buf.split("\n");
-      buf = lines.pop(); // last (possibly partial) line stays in buf
-
-      for (var i = 0; i < lines.length; i++) {
-        var line = lines[i].trim();
-        if (!line) continue;
-        var chunk = parseSseLine(line);
-        if (!chunk) continue;
-
-        if (chunk.id && !sseChunkId) sseChunkId = chunk.id;
-        capPush("sse_chunk", { chunk: chunk });
-
-        // A frame carrying `error` (and no `choices`) is a fatal,
-        // whole-turn failure -- either muxplex's proxy reporting its own
-        // layer (e.g. the sidecar unreachable) or the sidecar forwarding
-        // a provider error mid-stream. Both deliberately share this shape
-        // (see main.py's agent_chat_completions_proxy docstring: "mirrors
-        // the agent's own mid-stream error convention"). This must be
-        // handled BEFORE the `!choice` guard below -- previously it fell
-        // straight through that guard (an error frame has no `choices`)
-        // and the turn ended with nothing rendered at all (muxplex-695).
-        // Checked for ANY error frame, not just the sidecar-unreachable
-        // message: this is a general blind spot, and the proxy or the
-        // sidecar can each emit this shape for different causes.
-        if (chunk.error) {
-          var streamErrMsg = (chunk.error && chunk.error.message) ||
-            JSON.stringify(chunk.error);
-          capPush("request_error", {
-            sse_error: chunk.error,
+          var choice = chunk.choices && chunk.choices[0];
+          if (!choice) continue;
+          if (choice.delta && typeof choice.delta.content === "string" && choice.delta.content) {
+            if (!assistantBubble) {
+              if (!pendingConfirmResolve) clearStatus();
+              assistantBubble = appendBubble("assistant");
+            }
+            assistantText += choice.delta.content;
+            assistantBubble.textContent = assistantText;
+            announceStreamed(assistantText); // clause-boundary, not per-token
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+          // Raw SDK tool_calls are observations only, never imported history.
+          if (choice.finish_reason) finishReason = choice.finish_reason;
+        }
+        if (res.done || sawDone) break;
+      }
+      if (finishReason !== "stop" || !sawDone) {
+        throw typedAgentError({ code: "incomplete_turn",
+          message: "The response ended without a successful terminal event.",
+          remedy: "The turn is incomplete. Inspect any issued action before retrying; start a new conversation if resume is refused." });
+      }
+      // A terminal event must not authorize queued callbacks after EOF.
+      // A correct server waits for results before its successful stop.
+      var unsettled = Array.from(turn.calls.values()).some(function (call) { return !call.settled; });
+      if (unsettled) {
+        throw typedAgentError({ code: "incomplete_callbacks",
+          message: "The response closed with unfinished browser actions.",
+          remedy: "No queued action will be started. Inspect already-issued actions before retrying." });
+      }
+      await turn.queue;
+      if (!turnIsLive(turn)) return;
+      terminalSuccess = true;
+    } finally {
+      if (reader.releaseLock) reader.releaseLock();
+      if (!terminalSuccess) {
+        turn.closed = true;
+        turn.controller.abort();
+        resolveConfirm(false);
+        if (activeTurn === turn) {
+          announceStreamEnd();
+          finishAssistantBubble(assistantBubble, assistantText);
+          capPush("request_end", {
+            finish_reason: "incomplete", chunk_id: sseChunkId,
+            assistant_text: truncateForCapture(assistantText),
+            tool_call_count: turn.calls.size,
             duration_ms: Math.round(performance.now() - requestStartedAt),
           });
-          clearStatus();
-          appendToolError("__stream__", streamErrMsg);
-          return;
         }
-
-        var choice = chunk.choices && chunk.choices[0];
-        if (!choice) continue;
-
-        if (choice.delta && typeof choice.delta.content === "string" && choice.delta.content) {
-          if (!assistantBubble) { clearStatus(); assistantBubble = appendBubble("assistant"); }
-          assistantText += choice.delta.content;
-          assistantBubble.textContent = assistantText;
-          // Buffered, clause-boundary announcement -- NOT one per token.
-          announceStreamed(assistantText);
-          messagesEl.scrollTop = messagesEl.scrollHeight;
-        }
-
-        if (choice.delta && choice.delta.tool_calls) {
-          choice.delta.tool_calls.forEach(function (tc) {
-            var idx = tc.index || 0;
-            var existing = toolCallsByIndex[idx];
-
-            // Some providers (observed live: amplifier-agent's
-            // chat-completions endpoint reports index:0 for EVERY parallel
-            // tool call in a turn instead of incrementing it per call) don't
-            // give each parallel call a distinct index -- but each call is
-            // still uniquely identified by a fresh `id` on its first chunk.
-            // If an incoming id doesn't match what's already accumulated at
-            // this index, this is a NEW tool call arriving, not a
-            // continuation of the previous one -- key it separately so the
-            // two calls' `arguments` strings don't get silently concatenated
-            // into one corrupted JSON blob (was reproduced live: two calls
-            // in one turn merged into `{"session_name":"a"}{"session_name":"b"}`).
-            if (tc.id && existing && existing.id && tc.id !== existing.id) {
-              idx = idx + ":" + tc.id;
-              existing = toolCallsByIndex[idx];
-            }
-
-            if (!existing) {
-              existing = {
-                id: "",
-                type: "function",
-                function: { name: "", arguments: "" },
-                __seq: toolCallSeq++,
-              };
-            }
-            if (tc.id) existing.id = tc.id;
-            if (tc.type) existing.type = tc.type;
-            if (tc.function) {
-              if (tc.function.name) existing.function.name = tc.function.name;
-              if (typeof tc.function.arguments === "string") {
-                existing.function.arguments += tc.function.arguments;
-              }
-            }
-            toolCallsByIndex[idx] = existing;
-          });
-        }
-
-        if (choice.finish_reason) finishReason = choice.finish_reason;
       }
-    }
-
-    if (finishReason === "tool_calls") {
-      // Sort by __seq (insertion order), not by key -- keys may now be
-      // synthetic "index:id" strings (see the parallel-call workaround
-      // above), not reliably numeric.
-      var toolCalls = Object.keys(toolCallsByIndex)
-        .map(function (k) { return toolCallsByIndex[k]; })
-        .sort(function (a, b) { return a.__seq - b.__seq; });
-
-
-      announceStreamEnd();
-      finishAssistantBubble(assistantBubble, assistantText);
-      capPush("request_end", {
-        finish_reason: finishReason,
-        chunk_id: sseChunkId,
-        assistant_text: truncateForCapture(assistantText),
-        tool_call_count: toolCalls.length,
-        duration_ms: Math.round(performance.now() - requestStartedAt),
-      });
-      capPush("tool_calls_requested", {
-        tool_calls: toolCalls.map(function (t) {
-          return { id: t.id, name: t.function.name, arguments_raw: t.function.arguments };
-        }),
-      });
-
-      // Record the assistant turn exactly as the model produced it (content
-      // may legitimately be "" when the turn was tool-calls-only).
-      messages.push({ role: "assistant", content: assistantText, tool_calls: toolCalls });
-
-      // Every tool_call_id from this turn gets its own {role:"tool"} message
-      // below, in call order, whether there's one call or several (including
-      // repeats of the same tool name) -- the provider requires a reply to
-      // each one before the continuation is well-formed.
-      for (var t = 0; t < toolCalls.length; t++) {
-        var tc2 = toolCalls[t];
-        var resultContent;
-        var toolStartedAt = performance.now();
-        // Name the concrete action before doing it, in the right register
-        // (muxplex-l2y). Arguments are parsed leniently here purely for
-        // phrasing -- executeToolCall does its own strict validation.
-        var __args = {};
-        try { __args = JSON.parse(tc2.function.arguments || "{}"); } catch (e) { __args = {}; }
-        var __act = describeToolAction(tc2.function.name, __args);
-        setStatus(__act.kind, __act.text + "...");
-        armStallWatch(__act.text.charAt(0).toLowerCase() + __act.text.slice(1));
-        try {
-          resultContent = await executeToolCall(tc2);
-          // Summary on screen, full payload one tap away. `resultContent`
-          // itself is untouched and still goes to the model verbatim below
-          // -- the capture event immediately below also gets it raw.
-          clearStatus();
-          appendToolResult(tc2.function.name, resultContent);
-          capPush("tool_call_result", {
-            tool_call_id: tc2.id,
-            name: tc2.function.name,
-            arguments_raw: tc2.function.arguments,
-            ok: true,
-            result_raw: truncateForCapture(resultContent),
-            duration_ms: Math.round(performance.now() - toolStartedAt),
-          });
-        } catch (toolErr) {
-          var __errMsg = String(toolErr && toolErr.message || toolErr);
-          // The MODEL still gets the full, unedited error -- including any
-          // guidance addressed to it -- because that is what lets it explain
-          // the remedy. The USER gets one plain sentence, with only the
-          // SERVER's own words collapsed underneath: appendToolError renders
-          // toolErr.userDetail when the thrower supplied one, never this
-          // blended string (muxplex-ixl).
-          resultContent = JSON.stringify({ error: __errMsg });
-          clearStatus();
-          appendToolError(tc2.function.name, __errMsg, toolErr);
-          capPush("tool_call_result", {
-            tool_call_id: tc2.id,
-            name: tc2.function.name,
-            arguments_raw: tc2.function.arguments,
-            ok: false,
-            error: String(toolErr && toolErr.message || toolErr),
-            duration_ms: Math.round(performance.now() - toolStartedAt),
-          });
-        }
-        messages.push({ role: "tool", tool_call_id: tc2.id, content: resultContent });
-      }
-
-      // Continue the same turn -- this is the re-POST the spec describes.
-      await runTurn();
-      return;
     }
 
     announceStreamEnd();
@@ -2917,17 +2988,18 @@
       finish_reason: finishReason,
       chunk_id: sseChunkId,
       assistant_text: truncateForCapture(assistantText),
-      tool_call_count: 0,
+      tool_call_count: turn.calls.size,
       duration_ms: Math.round(performance.now() - requestStartedAt),
     });
 
-    // Normal stop: record the finished assistant turn in history.
+    // Presentation only -- never imported into a later SDK request.
     if (assistantText || finishReason === "stop") {
       messages.push({ role: "assistant", content: assistantText });
     }
   }
 
   async function handleSend() {
+    if (activeTurn) return; // keyboard shortcuts must not create concurrent turns
     var text = inputEl.value.trim();
     // muxplex-1i9: a pasted screenshot with no caption IS the message --
     // "look at this" is often exactly what the image already says. An
@@ -2950,7 +3022,8 @@
       img.setAttribute("alt", "Attached image: " + a.name);
       bubble.appendChild(img);
     });
-    messages.push({ role: "user", content: buildUserContent(text, attachments) });
+    var userMessage = { role: "user", content: buildUserContent(text, attachments) };
+    messages.push(userMessage);
 
     turnIndex++;
     requestIndex = -1; // runTurn() increments this to 0 on its first call for this turn
@@ -2964,18 +3037,31 @@
     });
 
     sendBtn.disabled = true;
+    var turn = { controller: new AbortController(), closed: false, queue: Promise.resolve(),
+      calls: new Map(), typingBlocked: false, reader: null, stopBtn: $("chat-stop-btn") };
+    activeTurn = turn;
+    if (turn.stopBtn) turn.stopBtn.classList.remove("hidden");
     try {
-      await runTurn();
+      await runTurn(turn, userMessage);
     } catch (err) {
-      clearStatus();
-      appendToolError("__request__", String(err && err.message || err));
-      capPush("turn_error", { error: String(err && err.message || err) });
+      if (activeTurn === turn) {
+        cancelTurn(false);
+        appendToolError("__request__", String(err && err.message || err), err);
+        capPush("turn_error", { error: String(err && err.message || err) });
+      }
     } finally {
       // Whatever happened, the turn is over: no row may be left saying the
       // agent is still working. This is the "stalled or dropped must be
       // unambiguous" half of muxplex-l2y.
-      clearStatus();
-      sendBtn.disabled = false;
+      if (activeTurn === turn) {
+        turn.closed = true;
+        turn.controller.abort();
+        resolveConfirm(false);
+        activeTurn = null;
+        clearStatus();
+        sendBtn.disabled = false;
+        if (turn.stopBtn) turn.stopBtn.classList.add("hidden");
+      }
     }
   }
 
@@ -3471,6 +3557,10 @@
     newBtn.addEventListener("click", newConversation);
     exportBtn.addEventListener("click", exportCaptureRecord);
     sendBtn.addEventListener("click", handleSend);
+    var stopBtn = $("chat-stop-btn");
+    if (stopBtn) stopBtn.addEventListener("click", function () { cancelTurn(true); });
+    var confirmStopBtn = $("chat-confirm-stop-btn");
+    if (confirmStopBtn) confirmStopBtn.addEventListener("click", function () { cancelTurn(true); });
 
     // muxplex-fx1: pops open Settings already switched to the Agent tab --
     // the SAME openSettings()+switchSettingsTab('agent') pair app.js's own

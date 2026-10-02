@@ -967,6 +967,9 @@
            justify-content:flex-end (style.css) to push both to the right
            edge; nothing else lives in this row to push against. -->
       <button id="chat-new-btn" class="header-btn" aria-label="New conversation" title="Start a new conversation">+</button>
+      <!-- Same-turn callbacks can wait for confirmation: Stop closes the stream
+           and fences queued effects, but cannot undo an already-issued action. -->
+      <button id="chat-stop-btn" class="header-btn hidden" type="button" aria-label="Stop agent turn" title="Stop this turn; already-issued actions may have taken effect">&#9632;</button>
       <!-- muxplex-4kl: exports a structured debug record (transcript, tool
            calls, raw tool results, timings, the SSE stream, console/network
            errors, app state) of this conversation to a local .json file --
@@ -1131,6 +1134,9 @@
     </div>
     <div class="agent-confirm-actions">
       <button id="chat-confirm-cancel-btn" class="agent-confirm-btn agent-confirm-btn--cancel" type="button">Cancel</button>
+      <!-- Header controls are inert while showModal() is open. Keep a Stop
+           control inside the dialog so the whole turn can be cancelled here. -->
+      <button id="chat-confirm-stop-btn" class="agent-confirm-btn agent-confirm-btn--cancel" type="button">Stop turn</button>
       <button id="chat-confirm-send-btn" class="agent-confirm-btn agent-confirm-btn--send" type="button">Send it</button>
     </div>
   </dialog>
