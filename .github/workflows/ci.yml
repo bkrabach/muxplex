@@ -32,20 +32,20 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        # `--extra agent` installs amplifier-agent (muxplex/agent_embedded/,
-        # see pyproject.toml's `agent` extra) so
-        # test_agent_credential_embedded.py's non-schema tests exercise the
-        # real provider-loading code path instead of raising
-        # ModuleNotFoundError -- that file's own header comment already
-        # assumed this happened; it never actually did until now (no job in
-        # this workflow installed the extra). Effectively a no-op on this
-        # matrix's 3.11 leg: the `agent` extra's `python_version>='3.12'`
-        # marker means uv installs nothing for it there, since
-        # amplifier-agent itself requires Python >=3.12 -- that test file's
-        # own `needs_amplifier_agent_cli` guard skips cleanly on 3.11 rather
-        # than failing, which is a real, permanent constraint, not a gap
-        # this step can close.
-        run: uv sync --extra dev --extra agent
+        # 3.11 remains base-only; >=3.12 installs the tagged public SDK and
+        # its declared engine. The import gate below must not silently skip
+        # because an obsolete amplifier_agent_cli import is absent.
+        run: uv sync --locked --extra dev --extra agent
+
+      - name: Verify installed public Agent SDK and engine
+        if: matrix.python-version != '3.11'
+        run: |
+          uv run --no-sync python - <<'PY'
+          from muxplex.cli import _agent_import_probe, _agent_target_pin
+          version, error = _agent_import_probe()
+          assert version == _agent_target_pin() and error is None, error
+          print("Public Agent SDK and engine:", version)
+          PY
 
       - name: Run tests
         run: uv run pytest -v
@@ -139,7 +139,16 @@ jobs:
         # runner is always Python 3.13, which always satisfies
         # amplifier-agent's `python_version>='3.12'` floor, so `--extra
         # agent` always installs for real here.
-        run: uv sync --extra dev --extra agent
+        run: uv sync --locked --extra dev --extra agent
+
+      - name: Verify installed public Agent SDK and engine
+        run: |
+          uv run --no-sync python - <<'PY'
+          from muxplex.cli import _agent_import_probe, _agent_target_pin
+          version, error = _agent_import_probe()
+          assert version == _agent_target_pin() and error is None, error
+          print("Public Agent SDK and engine:", version)
+          PY
 
       - name: Run tests
         run: uv run pytest -v
@@ -239,6 +248,12 @@ jobs:
           uv venv .venv-latest --python 3.13
           uv pip install --python .venv-latest/bin/python -e ".[dev,agent]"
           .venv-latest/bin/python -c "import uvicorn, websockets; print('uvicorn', uvicorn.__version__); print('websockets', websockets.__version__)"
+          .venv-latest/bin/python - <<'PY'
+          from muxplex.cli import _agent_import_probe, _agent_target_pin
+          version, error = _agent_import_probe()
+          assert version == _agent_target_pin() and error is None, error
+          print("Public Agent SDK and engine (fresh resolver):", version)
+          PY
 
       - name: Run tests
         run: .venv-latest/bin/python -m pytest -v

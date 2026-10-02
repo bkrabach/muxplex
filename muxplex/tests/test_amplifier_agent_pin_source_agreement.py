@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import tomllib
 
@@ -93,6 +94,12 @@ def test_amplifier_agent_source_is_a_git_entry_not_a_local_path():
         f"[tool.uv.sources] amplifier-agent entry must be a git source, got:"
         f" {agent_source!r}."
     )
+    assert agent_source.get("subdirectory") == "packages/python", (
+        "The public SDK is packages/python, not the repository-root project."
+    )
+    assert "amplifier-foundation" not in sources, (
+        "Engine dependency revisions must not be overridden by muxplex."
+    )
 
 
 def test_amplifier_agent_pin_and_source_tag_agree():
@@ -130,3 +137,29 @@ def test_cli_fallback_pin_agrees_with_pyproject_pin():
         f"DRIFT: cli._AGENT_FALLBACK_PIN is {match.group(1)!r} but"
         f" pyproject.toml pins amplifier-agent=={pinned_version!r}."
     )
+
+
+def test_agent_python_floor_preserves_base_311():
+    data = _load_pyproject()
+    assert data["project"]["requires-python"] == ">=3.11"
+    marker = _agent_extra_dependency(data).split(";", 1)[1]
+    assert marker.strip() == "python_version>='3.12'"
+
+
+def test_sdk_and_engine_lock_resolve_the_frozen_tag():
+    lock = tomllib.loads((_PYPROJECT.parent / "uv.lock").read_text(encoding="utf-8"))
+    packages = {entry["name"]: entry for entry in lock["package"]}
+    sha = "fcdea58fcefa14c8340e6fd4d703947d08451dd3"
+    version = _agent_extra_pin(_load_pyproject())
+    for name, subdirectory in (
+        ("amplifier-agent", "packages/python"),
+        ("amplifier-agent-engine", "packages/engine"),
+    ):
+        entry = packages[name]
+        assert entry["version"] == version
+        source = entry["source"]["git"]
+        url = urlsplit(source)
+        query = parse_qs(url.query)
+        assert query["subdirectory"] == [subdirectory]
+        assert query["tag"] == [f"v{version}"]
+        assert url.fragment == sha
