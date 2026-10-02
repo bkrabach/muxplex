@@ -289,6 +289,7 @@
    * drop data; always say exactly how much was cut and from where. */
   function truncateForCapture(str) {
     if (typeof str !== "string") return str;
+    registerCaptureSecrets(str);
     str = scrubCapture(str);
     if (str.length <= CAPTURE_MAX_STRING) return str;
     return str.slice(0, CAPTURE_MAX_STRING) +
@@ -301,6 +302,7 @@
    * documented no-op (visible in the exported record itself) rather than
    * an unbounded memory leak or a silent truncation. */
   function capPush(type, fields) {
+    registerCaptureSecrets(fields);
     if (captureCapped) return null;
     if (captureEvents.length >= CAPTURE_MAX_EVENTS) {
       captureCapped = true;
@@ -321,20 +323,61 @@
     return evt;
   }
 
-  // Callback capabilities must not survive in capture objects, raw JSON strings,
-  // console hooks, or either export format. Scrub before retaining, not after.
+  // Discover capabilities at the capture boundary, including nested/raw JSON.
+  // An earlier network/console event may echo a value before its callback arrives
+  // (e.g. a settings response racing the SSE pump). Re-scrub that retained history
+  // as soon as the value becomes identifiable, not only when exporting.
+  function registerCaptureSecrets(value) {
+    var added = false;
+    function remember(secret) {
+      if (typeof secret === "string" && secret && secret !== "[redacted]" &&
+          secret !== "[redacted callback capability]" && captureSecrets.indexOf(secret) === -1) {
+        captureSecrets.push(secret);
+        added = true;
+      }
+    }
+    function visit(item) {
+      if (typeof item === "string") {
+        try {
+          var parsed = JSON.parse(item);
+          if (parsed && typeof parsed === "object") { visit(parsed); return; }
+        } catch (e) { /* console prose or incomplete JSON -- inspect keyed strings */ }
+        item.replace(/"(?:result_token|capability)"\s*:\s*("(?:\\.|[^"\\])*")/g,
+          function (_, quoted) {
+            try { remember(JSON.parse(quoted)); } catch (e) { /* malformed string */ }
+            return _;
+          });
+      } else if (item && typeof item === "object") {
+        Object.keys(item).forEach(function (key) {
+          if (key === "result_token" || key === "capability") remember(item[key]);
+          visit(item[key]);
+        });
+      }
+    }
+    visit(value);
+    if (added) captureEvents = captureEvents.map(scrubCapture);
+  }
+
+  // Scrub objects and JSON strings structurally; known capability echoes are
+  // also removed from plain text. Neither capture nor export keeps authority.
   function scrubCapture(value) {
     if (typeof value === "string") {
+      try {
+        var parsed = JSON.parse(value);
+        if (parsed && typeof parsed === "object") return JSON.stringify(scrubCapture(parsed));
+      } catch (e) { /* ordinary text -- scrub known values and keyed fragments */ }
       captureSecrets.forEach(function (secret) {
+        var escaped = JSON.stringify(secret).slice(1, -1);
+        value = value.split(escaped).join("[redacted callback capability]");
         value = value.split(secret).join("[redacted callback capability]");
       });
-      return value.replace(/("result_token"\s*:\s*")[^"]*"/g, '$1[redacted]"');
+      return value.replace(/("(?:result_token|capability)"\s*:\s*)"(?:\\.|[^"\\])*"/g, '$1"[redacted]"');
     }
     if (Array.isArray(value)) return value.map(scrubCapture);
     if (value && typeof value === "object") {
       var copy = {};
       Object.keys(value).forEach(function (key) {
-        copy[key] = key === "result_token" ? "[redacted]" : scrubCapture(value[key]);
+        copy[key] = key === "result_token" || key === "capability" ? "[redacted]" : scrubCapture(value[key]);
       });
       return copy;
     }
@@ -594,6 +637,14 @@
     });
 
     var res = call._result;
+    (call._effects || []).forEach(function (n) {
+      L.push("Effect dispatched: `" + n.method + " " + n.url +
+        "` -- cancellation cannot undo this request; without a result its effect is unknown.");
+      if (n.request_body) {
+        L.push("Dispatched request body:");
+        L.push(fence("json", n.request_body));
+      }
+    });
     if (!res) {
       L.push("Result: **NONE RECORDED** -- the tool never returned. Something " +
         "interrupted the turn between the call and its result.");
@@ -735,7 +786,10 @@
           var nets = rev.filter(function (e) { return e.type === "network_call"; });
           var netIdx = 0;
           requested.reduce(function (calls, e) { return calls.concat(e.tool_calls); }, []).forEach(function (c) {
-            var call = { id: c.id, name: c.name, arguments_raw: c.arguments_raw, _http: [], _result: null };
+            var call = { id: c.id, name: c.name, arguments_raw: c.arguments_raw, _http: [], _result: null,
+              _effects: rev.filter(function (e) {
+                return e.type === "tool_effect_issued" && e.tool_call_id === c.id;
+              }) };
             var res = results.filter(function (e) { return e.tool_call_id === c.id; })[0];
             call._result = res || null;
             // apiFetch's network_call events are appended in execution order,
@@ -755,7 +809,7 @@
         rev.filter(function (e) {
           return e.type === "console_error" || e.type === "console_warn" ||
             e.type === "window_error" || e.type === "unhandled_rejection" ||
-            e.type === "turn_error" || e.type === "capture_capped";
+            e.type === "turn_error" || e.type === "turn_cancelled" || e.type === "capture_capped";
         }).forEach(function (e) { L.push(""); L.push(mdLooseEvent(e)); });
       });
     });
@@ -783,6 +837,11 @@
     }
     if (e.type === "turn_error") {
       return "- **turn failed** " + e.ts + ": " + e.error;
+    }
+    if (e.type === "turn_cancelled") {
+      return "- **turn cancelled** " + e.ts +
+        ": queued actions were cancelled; already-issued actions may have taken effect. " +
+        "Cancellation does not undo dispatched input. Inspect the session before retrying.";
     }
     if (e.type === "capture_capped") {
       return "- **capture capped** " + e.ts + ": " + e.note;
@@ -1259,6 +1318,7 @@
 
   function newConversation() {
     cancelTurn(false);
+    if (liveEl) liveEl.textContent = "";
     agentSessionId = null;
     clientSessionId = "chat-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
     messages = [];
@@ -2650,6 +2710,10 @@
     if (execution) {
       requireLiveExecution(execution);
       execution.effectIssued = true; // cancellation cannot undo this dispatch
+      capPush("tool_effect_issued", {
+        tool_call_id: execution.callId, name: execution.name, method: method, url: url,
+        request_body: options && options.body != null ? truncateForCapture(String(options.body)) : null,
+      });
       options = Object.assign({}, options, { execution: execution });
     }
     try {
@@ -2664,8 +2728,10 @@
 
   function cancelTurn(showNotice) {
     var turn = activeTurn;
+    announceStreamEnd(); // reset text, offset and timer even before a reader unwinds
     if (!turn) return;
     turn.closed = true; // fence queued effects before resolving the dialog
+    if (turn.finishRequest) turn.finishRequest(showNotice ? "cancelled" : "incomplete");
     turn.controller.abort();
     resolveConfirm(false);
     if (turn.reader) turn.reader.cancel().catch(function () {});
@@ -2692,9 +2758,6 @@
    * observations, never another authority to run the same effect. Mark seen
    * before queueing so duplicate events cannot open a second confirmation. */
   function queueBrowserTool(turn, event) {
-    if (typeof event.result_token === "string" && event.result_token) {
-      captureSecrets.push(event.result_token);
-    }
     if (!turnIsLive(turn)) return;
     if (event.version !== 1 || event.run_id !== turn.runId ||
         event.session_id !== turn.sessionId ||
@@ -2711,7 +2774,8 @@
       function: { name: event.name, arguments: typeof event.arguments === "string"
         ? event.arguments : JSON.stringify(event.arguments) },
     };
-    var execution = { turn: turn, deadline: Date.parse(event.deadline), controller: new AbortController(),
+    var execution = { turn: turn, callId: call.id, name: event.name,
+      deadline: Date.parse(event.deadline), controller: new AbortController(),
       effectIssued: false, uncertain: false, confirmed: false };
     turn.calls.set(event.call_id, execution);
     capPush("tool_calls_requested", { tool_calls: [{
@@ -2810,6 +2874,23 @@
   async function runTurn(turn, userMessage) {
     requestIndex++;
     var requestStartedAt = performance.now();
+    var assistantText = "";
+    var assistantBubble = null;
+    var sseChunkId = null;
+    // Stop must snapshot synchronously: a cancelled reader may never settle, or
+    // may unwind after another turn/New. Record once while this turn still owns
+    // the conversation, never from an abandoned asynchronous continuation.
+    turn.finishRequest = function (reason) {
+      if (turn.requestEnded || activeTurn !== turn) return;
+      turn.requestEnded = true;
+      finishAssistantBubble(assistantBubble, assistantText);
+      capPush("request_end", {
+        finish_reason: reason, chunk_id: sseChunkId,
+        assistant_text: truncateForCapture(assistantText),
+        tool_call_count: turn.calls.size,
+        duration_ms: Math.round(performance.now() - requestStartedAt),
+      });
+    };
     setStatus("wait", "Thinking about what to do next...");
     armStallWatch("waiting for the agent to respond");
     var focusLine = focusContextLine();
@@ -2895,12 +2976,10 @@
     turn.reader = reader;
     var decoder = new TextDecoder();
     var buf = "";
-    var assistantText = "";
-    var assistantBubble = null;
     var finishReason = null;
     var sawDone = false;
     var terminalSuccess = false;
-    var sseChunkId = null; // this request's chunk id, from the SSE wire -- the sidecar's own
+    // sseChunkId is this request's chunk id, from the SSE wire -- the sidecar's own
     // per-request log correlator (see amplifier_agent_http's "chat-completion
     // start chunk_id=%s ... client_session_id=%r" log line).
 
@@ -2917,11 +2996,11 @@
           if (line === "data: [DONE]") { sawDone = true; continue; }
           var chunk = parseSseLine(line);
           if (!chunk) continue;
+          capPush("sse_chunk", { chunk: chunk });
           if (chunk.muxplex_browser_tool) {
             queueBrowserTool(turn, chunk.muxplex_browser_tool);
           }
           if (chunk.id && !sseChunkId) sseChunkId = chunk.id;
-          capPush("sse_chunk", { chunk: chunk });
           if (chunk.error) {
             capPush("request_error", {
               sse_error: chunk.error,
@@ -2968,29 +3047,16 @@
       if (!terminalSuccess) {
         turn.closed = true;
         turn.controller.abort();
-        resolveConfirm(false);
         if (activeTurn === turn) {
+          resolveConfirm(false);
           announceStreamEnd();
-          finishAssistantBubble(assistantBubble, assistantText);
-          capPush("request_end", {
-            finish_reason: "incomplete", chunk_id: sseChunkId,
-            assistant_text: truncateForCapture(assistantText),
-            tool_call_count: turn.calls.size,
-            duration_ms: Math.round(performance.now() - requestStartedAt),
-          });
+          turn.finishRequest("incomplete");
         }
       }
     }
 
     announceStreamEnd();
-    finishAssistantBubble(assistantBubble, assistantText);
-    capPush("request_end", {
-      finish_reason: finishReason,
-      chunk_id: sseChunkId,
-      assistant_text: truncateForCapture(assistantText),
-      tool_call_count: turn.calls.size,
-      duration_ms: Math.round(performance.now() - requestStartedAt),
-    });
+    turn.finishRequest(finishReason);
 
     // Presentation only -- never imported into a later SDK request.
     if (assistantText || finishReason === "stop") {
@@ -3054,6 +3120,7 @@
       // agent is still working. This is the "stalled or dropped must be
       // unambiguous" half of muxplex-l2y.
       if (activeTurn === turn) {
+        if (turn.finishRequest) turn.finishRequest("incomplete");
         turn.closed = true;
         turn.controller.abort();
         resolveConfirm(false);
