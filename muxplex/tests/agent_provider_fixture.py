@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ def require_container() -> None:
     )
 
 
-def frames(model: str, tool: str | None, ordinal: int):
+def frames(model: str, tool: str | None, ordinal: int) -> Iterator[dict[str, Any]]:
     yield {
         "type": "message_start",
         "message": {
@@ -105,6 +106,7 @@ class ProviderFixture:
 
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         task = asyncio.current_task()
+        assert task is not None
         self.tasks.add(task)
         self.connections.add(writer)
         try:

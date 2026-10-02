@@ -241,7 +241,9 @@ async def test_result_endpoint_status_order_owner_token_duplicate_oversized_stal
         owner=owner, session_id="a" * 32, model=runner.default_model(), browser=True
     )
     future = asyncio.get_running_loop().create_future()
-    run.bridge.pending["call"] = PendingCall(
+    bridge = run.bridge
+    assert bridge is not None
+    bridge.pending["call"] = PendingCall(
         "list_muxplex_sessions",
         "capability",
         datetime.now(UTC) + timedelta(seconds=30),
@@ -332,10 +334,14 @@ def test_usage_is_replacement_projection_and_unknown_is_not_zero():
             )
         ]
     )
-    assert wire.usage_block(snapshot)["prompt_tokens"] == 50
+    usage = wire.usage_block(snapshot)
+    assert usage is not None
+    assert usage["prompt_tokens"] == 50
     snapshot.entries[0].tokens_out = None
-    assert wire.usage_block(snapshot)["completion_tokens"] is None
-    assert wire.usage_block(snapshot)["total_tokens"] is None
+    usage = wire.usage_block(snapshot)
+    assert usage is not None
+    assert usage["completion_tokens"] is None
+    assert usage["total_tokens"] is None
     assert "usage" not in wire.stop_chunk("chunk", "model")
 
 
@@ -363,13 +369,17 @@ async def test_cleanup_budget_keeps_slow_handles_and_owner_lease_quarantined(
         await run.close()
         assert entered.is_set() and run.closing and not run.closed
         assert run.run_id in runner._runs and lease.fd >= 0
-        assert run.bridge.closed
+        bridge = run.bridge
+        assert bridge is not None
+        assert bridge.closed
         with pytest.raises(AgentRequestError) as busy:
             SessionLease(tmp_path, run.session_id, "owner", new=False)
         assert busy.value.status == 409
     finally:
         release.set()
-        await asyncio.wait_for(run.cleanup_task, 1)
+        cleanup_task = run.cleanup_task
+        assert cleanup_task is not None
+        await asyncio.wait_for(cleanup_task, 1)
     assert run.closed and lease.fd == -1 and run.run_id not in runner._runs
     assert json.loads(lease.path.read_text())["run"]["turn_id"] == "turn"
 
@@ -392,7 +402,9 @@ async def test_shutdown_during_preparation_owns_late_handles(monkeypatch, tmp_pa
         assert not run.closed and run.lease.fd >= 0
         run.agent = SimpleNamespace(close=close_late_handle)
         run.prepared.set()
-        await asyncio.wait_for(run.cleanup_task, 1)
+        cleanup_task = run.cleanup_task
+        assert cleanup_task is not None
+        await asyncio.wait_for(cleanup_task, 1)
     finally:
         run.prepared.set()
         await run.close()

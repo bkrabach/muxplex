@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from typing import Any
 
 import httpx
 import pytest
@@ -39,7 +40,9 @@ def sdk_environment(monkeypatch, tmp_path):
     return tmp_path
 
 
-def request(session_id=None, *, browser=True, content="Hello"):
+def request(
+    session_id=None, *, browser=True, content: str | list[dict[str, Any]] = "Hello"
+):
     body = {
         "model": runner.default_model(),
         "messages": [{"role": "user", "content": content}],
@@ -90,10 +93,13 @@ async def test_real_sdk_streams_before_provider_finishes_and_projects_usage_once
             await asyncio.wait_for(observed.wait(), 15)
             assert not reader.done()  # genuine HTTP streaming, not buffered final
         finally:
-            fixture.release.set()
+            release = fixture.release
+            assert release is not None
+            release.set()
         await asyncio.wait_for(reader, 15)
     assert text(output) == "Wire reply"
     final = data(output[-2])
+    assert final is not None
     assert final["choices"][0]["finish_reason"] == "stop"
     assert final["usage"]["prompt_tokens"] == 25
     assert final["usage"]["completion_tokens"] == 2
@@ -155,7 +161,9 @@ async def test_real_sdk_same_turn_browser_callback_and_durable_resume(
                         == run.headers["X-Muxplex-Agent-Session-Id"]
                     )
                     assert capability["run_id"] == run.headers["X-Muxplex-Agent-Run-Id"]
-                    assert capability["call_id"] in run.bridge.pending
+                    bridge = run.bridge
+                    assert bridge is not None
+                    assert capability["call_id"] in bridge.pending
                     result = {
                         key: capability[key]
                         for key in ("run_id", "call_id", "result_token")
@@ -177,6 +185,7 @@ async def test_real_sdk_same_turn_browser_callback_and_durable_resume(
         assert "Browser result recorded" in json.dumps(fixture.requests[1])
         assert text(first) == "Wire reply"
         final = data(first[-2])
+        assert final is not None
         assert final["usage"]["prompt_tokens"] == 50  # replacement, not 25+50
         assert final["usage"]["completion_tokens"] == 4
         advertised = fixture.requests[0]["tools"]
@@ -233,7 +242,11 @@ async def test_real_sdk_does_not_redispatch_declined_or_unknown_typing(
     assert count == 1
     if outcome == "unknown":
         assert all(chunk != b"data: [DONE]\n\n" for chunk in output)
-        assert any(data(chunk) and data(chunk).get("error") for chunk in output)
+        assert any(
+            payload.get("error")
+            for chunk in output
+            if (payload := data(chunk)) is not None
+        )
 
 
 @pytest.mark.parametrize("failure,partial", [(401, False), (503, False), (None, True)])
@@ -307,6 +320,7 @@ async def test_real_sdk_cancel_pending_bridge_drains_same_pump_and_closes(
                     cap = payload["muxplex_browser_tool"]
                     break
         pump = run.pump
+        assert pump is not None
         await iterator.aclose()  # browser abort/disconnect, not a new turn
         assert run.pump is pump and pump.done()
         assert run.terminal is not None and run.terminal.state != "success"
@@ -333,7 +347,9 @@ async def test_real_sdk_durable_owner_and_concurrent_turn_fences(
         with pytest.raises(AgentRequestError) as busy:
             await runner.prepare_chat(request(run.session_id), owner="owner-a")
         assert busy.value.status == 409
-        fixture.release.set()
+        release = fixture.release
+        assert release is not None
+        release.set()
         await asyncio.wait_for(collect(run), 15)
         with pytest.raises(AgentRequestError) as wrong_owner:
             await runner.prepare_chat(request(run.session_id), owner="owner-b")

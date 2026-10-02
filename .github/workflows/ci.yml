@@ -50,6 +50,32 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+  test-agent-sdk:
+    # The provider fixture opens real loopback sockets and must run in a
+    # container. Imported SDK records alone do not prove a working turn.
+    name: test (public SDK, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - name: Install container prerequisites
+        run: apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - name: Install tagged SDK and pinned engine dependencies
+        run: uv sync --locked --python ${{ matrix.python-version }} --extra dev --extra agent
+      - name: Exercise real SDK against container-local provider
+        env:
+          MUXPLEX_RUN_SDK_TESTS: "1"
+        run: uv run --no-sync pytest -q -m integration muxplex/tests/test_agent_sdk_integration.py
+
   test-macos:
     # muxplex targets macOS, WSL, and Linux (README/AGENTS.md), but until now
     # every job in this workflow ran on ubuntu-latest -- zero macOS coverage.
@@ -565,4 +591,5 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run integration tests
-        run: uv run pytest -m integration -v
+        # Real SDK turns have their own explicitly opted-in container job.
+        run: uv run pytest -m integration -v --ignore=muxplex/tests/test_agent_sdk_integration.py
