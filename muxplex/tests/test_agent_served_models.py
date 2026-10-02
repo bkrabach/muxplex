@@ -42,17 +42,10 @@ silently invisible. So the check lives behind its own endpoint, and
 ``test_full_status_never_calls_the_provider`` fails the suite if anyone
 ever inlines it.
 
-WHAT IS NOT VERIFIED HERE, said plainly. amplifier-agent is an optional
-extra and is NOT installed on the host this was written on, so no test
-here has ever spoken to a real provider. What IS real: the enumeration
-call itself is not new code -- ``validate_key()`` has always called
-``instance.list_models()`` and this change routes both callers through
-one shared ``_enumerate_models()`` rather than adding a second call site.
-The seams around it are what these tests hold, and they hold them without
-a key by standing in for the two functions that reach amplifier-agent
-(``_resolve_api_key``, ``_enumerate_models``) -- the same shape
-test_agent_active_target.py already uses to test ``full_status()``
-without the extra installed.
+These tests check cache/verdict semantics without a live provider. Enumeration
+now uses bounded official HTTP requests, with that boundary covered through
+MockTransport in test_agent_credential_embedded.py. Resolution and enumeration
+are stubbed here to distinguish failed/partial lists from authoritative answers.
 """
 
 from __future__ import annotations
@@ -106,7 +99,7 @@ def _stub_enumeration(monkeypatch, verdict, detail, models, calls=None):
     """Stand in for the one function that talks to a provider.
 
     THE seam of this change. Patching here (rather than at
-    amplifier_agent_cli's internals, as test_agent_credential_embedded.py
+    provider HTTP, as test_agent_credential_embedded.py
     must) is what lets every outcome below be exercised on a host with no
     `agent` extra and no key -- i.e. on the host this was written on.
     """
@@ -407,6 +400,71 @@ async def test_a_changed_credential_invalidates_the_cache(monkeypatch):
     assert len(calls) == 2
 
 
+async def test_saved_key_rotation_invalidates_cache_after_stable_sdk_fallback(
+    tmp_path, monkeypatch
+):
+    """A file key must not become an env shadow or hide the next saved key."""
+    import asyncio
+    import os
+    import sys
+    from types import ModuleType
+    from typing import Any
+
+    monkeypatch.setattr(creds, "_credential_root", None)
+    monkeypatch.setattr(creds, "_file_environment", {})
+    monkeypatch.setattr(creds, "_construction_lock", asyncio.Lock())
+    monkeypatch.setenv("AMPLIFIER_AGENT_HOME", str(tmp_path))
+    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+    module = ModuleType("amplifier_agent")
+
+    async def factory(_options):
+        return object()
+
+    monkeypatch.setattr(module, "create_agent", factory, raising=False)
+    monkeypatch.setitem(sys.modules, "amplifier_agent", module)
+    options: Any = object()
+    _assume_library_available(monkeypatch)
+    calls = []
+
+    async def enumerate_models(provider, key, *, timeout_seconds):
+        calls.append(key)
+        return "ok", "1 model returned", [agent_embedded_runner.default_model()]
+
+    monkeypatch.setattr(creds, "_enumerate_models", enumerate_models)
+    creds.persist_key("anthropic", "unit-file-first")
+    await creds.create_agent_with_credentials(options)
+    assert (await creds.served_model_check())["status"] == "validated"
+    assert (await creds.served_model_check())["status"] == "validated"
+    assert calls == ["unit-file-first"]
+
+    creds.persist_key("anthropic", "unit-file-second")
+    # Construction is the only env-refresh boundary, but reads see saved changes.
+    assert os.environ["ANTHROPIC_API_KEY"] == "unit-file-first"
+    assert creds.resolve_status("anthropic")["source"] == "file"
+    assert (await creds.served_model_check())["status"] == "validated"
+    assert calls == ["unit-file-first", "unit-file-second"]
+    await creds.create_agent_with_credentials(options)
+    assert os.environ["ANTHROPIC_API_KEY"] == "unit-file-second"
+    assert (await creds.served_model_check())["status"] == "validated"
+    assert calls == ["unit-file-first", "unit-file-second"]
+
+
+async def test_malformed_credentials_make_served_models_unknown_not_not_served(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(creds, "_credential_root", tmp_path)
+    monkeypatch.setattr(creds, "_file_environment", {})
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    (tmp_path / "credentials.json").write_text('{"version": 2, "providers": {}}')
+    _assume_library_available(monkeypatch)
+    result = await creds.served_model_check()
+    assert result["status"] == "unknown"
+    assert result["reason"] == "credential_error"
+    assert result["served"] is None
+
+
 async def test_a_failed_lookup_is_never_cached(monkeypatch):
     """A transient failure that stuck for the TTL would keep reporting
     "could not check" long after the provider came back -- turning a blip
@@ -420,6 +478,27 @@ async def test_a_failed_lookup_is_never_cached(monkeypatch):
     await creds.served_model_check()
 
     assert len(calls) == 2
+
+
+async def test_served_model_deadline_includes_singleflight_lock_wait(monkeypatch):
+    import asyncio
+
+    _assume_library_available(monkeypatch)
+    _stub_credential(monkeypatch)
+    lock = asyncio.Lock()
+    await lock.acquire()
+    monkeypatch.setattr(creds, "_served_models_lock", lock)
+    _stub_enumeration(monkeypatch, "ok", "unused", ["unused"])
+    try:
+        result = await asyncio.wait_for(
+            creds.served_model_check(timeout_seconds=0.01), timeout=1
+        )
+    finally:
+        lock.release()
+    assert result["status"] == "unknown"
+    assert result["reason"] == "unreachable"
+    assert result["served"] is None
+    assert "timed out" in result["detail"]
 
 
 async def test_the_cache_never_holds_the_key_itself(monkeypatch):

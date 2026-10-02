@@ -74,7 +74,7 @@ dev = [
 # from-source pin, re-verify against amplifier-agent's own release tags
 # before bumping.
 #
-# `python_version>='3.12'` marker: amplifier-agent==0.12.0 itself requires
+# `python_version>='3.12'` marker: amplifier-agent==0.20.0 itself requires
 # Python >=3.12, stricter than muxplex's own `requires-python = ">=3.11"`.
 # Without the marker, `uv sync --extra agent` refuses to resolve AT ALL on
 # 3.11 (uv checks every extra against the full requires-python range, not
@@ -83,7 +83,7 @@ dev = [
 # extra is simply unavailable (with a clear resolver message, not a broken
 # lock) under Python 3.11.
 agent = [
-    "amplifier-agent==0.12.0; python_version>='3.12'",
+    "amplifier-agent==0.20.0; python_version>='3.12'",
 ]
 
 [project.scripts]
@@ -238,9 +238,7 @@ tmux-kit = { git = "https://github.com/bkrabach/tmux-kit", tag = "v0.7.0" }
 # published on PyPI -- source-only, same shape as tmux-kit above but
 # without a registry fallback (there is no registry copy to fall back to).
 # `tag` matches the `amplifier-agent==` pin above.
-amplifier-agent = { git = "https://github.com/microsoft/amplifier-agent", tag = "v0.12.0" }
-# Transitive dependency of amplifier-agent (`amplifier-foundation>=1.0.0`
-# in its own pyproject.toml), also not on PyPI. Mirrors amplifier-agent's
-# own [tool.uv.sources] entry for this package exactly (branch, not a
-# tag -- that's how amplifier-agent itself pins it).
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
+# The public Python SDK is a subproject; the repository root is not its wheel.
+# Its declared engine dependency owns execution-dependency revisions. Do not
+# override foundation or provider sources here.
+amplifier-agent = { git = "https://github.com/microsoft/amplifier-agent", tag = "v0.20.0", subdirectory = "packages/python" }
