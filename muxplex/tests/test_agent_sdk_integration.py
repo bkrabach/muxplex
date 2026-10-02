@@ -405,3 +405,57 @@ asyncio.run(main())
     assert "Recorded browser effect" in json.dumps(fixture.requests[-1])
     assert "First process" in json.dumps(fixture.requests[-1])
     assert "Second process" in json.dumps(fixture.requests[-1])
+
+
+@pytest.mark.parametrize("state", ["failure", "cancelled"])
+async def test_real_sdk_measured_work_then_failure_or_cancel_projects_usage_once(
+    sdk_environment, monkeypatch, state
+):
+    fixture = ProviderFixture(plan=["send_muxplex_session_input"])
+    calls = 0
+    async with fixture.running() as url:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", url)
+        run = await runner.prepare_chat(request(), owner="owner-a")
+        output = []
+        async with asyncio.timeout(20):
+            async for chunk in run.stream():
+                output.append(chunk)
+                payload = data(chunk)
+                if payload and "muxplex_browser_tool" in payload:
+                    calls += 1
+                    cap = payload["muxplex_browser_tool"]
+                    if state == "cancelled":
+                        await run.turn.cancel()  # public cancellation, same event pump
+                    else:
+                        runner.submit_browser_result(
+                            {
+                                **{
+                                    key: cap[key]
+                                    for key in ("run_id", "call_id", "result_token")
+                                },
+                                "outcome": "unknown",
+                                "error": "Fixture lost the effect's authoritative result",
+                            },
+                            owner="owner-a",
+                        )
+    assert calls == 1 and len(fixture.requests) == 1
+    assert run.terminal.state == state
+    payloads = [payload for chunk in output if (payload := data(chunk))]
+    projected = [payload for payload in payloads if "usage" in payload]
+    assert len(projected) == 1
+    assert projected[0]["error"]["code"] == (
+        "turn_cancelled" if state == "cancelled" else "tool_completion_unknown"
+    )
+    assert projected[0]["usage"] == {
+        "prompt_tokens": 25,
+        "completion_tokens": 2,
+        "total_tokens": 27,
+        "prompt_tokens_details": {"cached_tokens": 3},
+    }
+    assert b"data: [DONE]\n\n" not in output
+    assert not any(
+        choice.get("finish_reason") == "stop"
+        for payload in payloads
+        for choice in payload.get("choices", [])
+    )
+    assert run.closed and not runner._runs

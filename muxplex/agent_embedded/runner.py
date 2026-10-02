@@ -164,35 +164,35 @@ class LiveRun:
                 elif event.type == "usage":
                     usage = event.payload.snapshot  # full cumulative replacement
                 # tool_call/tool_result/approvals/progress are observations only.
-            if self.pump_error is not None:
-                yield wire.sse_data(wire.public_error(self.pump_error))
-                return
             result = self.terminal
-            if result is None:
-                yield wire.sse_data(
-                    wire.error_envelope(
-                        "incomplete_turn",
-                        "Agent stream ended without a terminal result.",
+            if result is not None and result.usage is not None:
+                usage = result.usage  # terminal snapshot wins, never accumulated
+            if self.pump_error is not None:
+                error = wire.public_error(self.pump_error)
+            elif result is None:
+                error = wire.error_envelope(
+                    "incomplete_turn",
+                    "Agent stream ended without a terminal result.",
+                    "Start a new conversation; do not retry uncertain effects.",
+                )
+            elif result.state != "success":
+                if result.error is not None:
+                    error = wire.public_error(result.error)
+                else:
+                    error = wire.error_envelope(
+                        f"turn_{result.state}",
+                        f"Agent turn {result.state}.",
                         "Start a new conversation; do not retry uncertain effects.",
                     )
-                )
+            else:
+                yield wire.sse_data(wire.stop_chunk(chunk_id, self.model, usage=usage))
+                yield wire.sse_done()
                 return
-            if result.state != "success":
-                if result.error is not None:
-                    yield wire.sse_data(wire.public_error(result.error))
-                else:
-                    yield wire.sse_data(
-                        wire.error_envelope(
-                            f"turn_{result.state}",
-                            f"Agent turn {result.state}.",
-                            "Start a new conversation; do not retry uncertain effects.",
-                        )
-                    )
-                return
-            yield wire.sse_data(
-                wire.stop_chunk(chunk_id, self.model, usage=result.usage or usage)
-            )
-            yield wire.sse_done()
+            # Failed/cancelled work still consumed tokens. Project once with
+            # the error, without a successful stop chunk or [DONE] sentinel.
+            if (block := wire.usage_block(usage)) is not None:
+                error["usage"] = block
+            yield wire.sse_data(error)
         finally:
             # ASGI disconnect cancels this generator, not the event pump. Shield
             # cleanup so the existing pump drains cancellation pairs/terminal.
@@ -256,7 +256,7 @@ async def prepare_chat(body: dict[str, Any], *, owner: str = "") -> LiveRun:
             "Sign in to muxplex in this browser.",
             403,
         )
-    from amplifier_agent import AgentOptions, SessionOptions
+    from amplifier_agent import AgentError, AgentOptions, SessionOptions
 
     model = body.get("model") or _DEFAULT_MODEL_ID
     prior = body["muxplex_agent"].get("session_id") if browser else None
@@ -323,13 +323,25 @@ async def prepare_chat(body: dict[str, Any], *, owner: str = "") -> LiveRun:
                 "Start a new conversation after restart.",
                 503,
             )
+        value = turn_input(
+            messages, model, browser=browser, context=body.get("context", "")
+        )
         if run.lease is not None:
             run.lease.mark(run.run_id)
-        run.turn = await run.session.start_turn(
-            turn_input(
-                messages, model, browser=browser, context=body.get("context", "")
-            )
-        )
+        try:
+            run.turn = await run.session.start_turn(value)
+        except AgentError as exc:
+            # v0.20.0 validates input / image capability before accepting a
+            # turn (docs/providers.md "Images"). Only these method refusals
+            # prove there is no effect to reconcile. Cancellation, untyped
+            # errors and other SDK failures retain the provisional marker.
+            if (
+                run.lease is not None
+                and exc.category == "input"
+                and exc.code in {"invalid_input", "image_unsupported"}
+            ):
+                run.lease.finished()
+            raise
         run.pump = asyncio.create_task(run._pump())
         if run.lease is not None:
             run.lease.mark(run.run_id, run.turn.info.turn_id)
