@@ -9,6 +9,7 @@ No factory, engine, provider, or credential-construction mock replaces this proo
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import sys
 from typing import Any
@@ -29,7 +30,9 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 def sdk_environment(monkeypatch, tmp_path):
     require_container()
-    import amplifier_agent
+    # The base-only lint environment does not install this optional package.
+    # Execution still raises on a missing SDK instead of silently skipping proof.
+    amplifier_agent = importlib.import_module("amplifier_agent")
 
     assert amplifier_agent.__version__ == "0.20.0", (
         "Use the frozen tagged SDK, not main."
