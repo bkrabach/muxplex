@@ -2688,6 +2688,8 @@
     if (typeof window.getFocusedSessionName !== "function") return null;
     var name = window.getFocusedSessionName();
     if (name) {
+      // 256 UTF-16 code units plus this ASCII hint stay below the wire's
+      // 1024-byte UTF-8 context limit, even for non-ASCII session names.
       return "Currently in focus: the dashboard has session \"" + String(name).slice(0, 256) +
         "\" open/expanded right now.";
     }
@@ -2897,9 +2899,10 @@
     var body = {
       model: MODEL,
       stream: true,
-      messages: (focusLine ? [{ role: "system", content: focusLine }] : []).concat([userMessage]),
+      messages: [userMessage],
       muxplex_agent: { protocol: 1, browser_tools: true },
     };
+    if (focusLine) body.context = focusLine;
     if (agentSessionId) body.muxplex_agent.session_id = agentSessionId;
 
     capPush("request_start", {
@@ -2907,6 +2910,7 @@
       model: MODEL,
       tool_names: TOOLS.map(function (t) { return t.function.name; }),
       client_session_id: clientSessionId,
+      context: focusLine ? truncateForCapture(focusLine) : null,
       messages: body.messages.map(function (m) {
         return {
           role: m.role,

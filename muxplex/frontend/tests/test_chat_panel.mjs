@@ -1161,9 +1161,9 @@ test('fx1: window.muxplexAgentCredential.recheckGate is the real checkAgentGate 
  * requests the tool, GET /api/federation/sessions answers with the given
  * sessions (muxplex-9wq: list_muxplex_sessions is federation-aware by
  * default now, so this is the endpoint it actually calls), and the
- * continuation completions call captures whatever was actually POSTed
- * (both the tool's own {role:"tool"} result AND the system message) so the
- * test can inspect both muxplex-h2f mechanisms in one real turn.
+ * single completions call captures the user message and focus context.
+ * The tool result is POSTed separately through the in-stream callback,
+ * so tests can inspect both muxplex-h2f mechanisms in one real turn.
  *
  * `sessionsPayload` entries may omit deviceId/deviceName/remoteId -- callers
  * that don't care about device tagging (most of GROUP 7, which predates
@@ -1245,7 +1245,7 @@ test('h2f: list_muxplex_sessions marks no entry as focused when nothing is open 
   assert.ok(parsed.every((s) => s.focused === undefined), 'no entry should be marked focused');
 });
 
-test('h2f: the per-turn system prompt names the focused session', async () => {
+test('h2f: the per-turn context names the focused session without a system message', async () => {
   const { completionsRequests, fetchImpl } = makeListSessionsFetch([]);
   const panel = loadChatPanel({ fetchImpl });
   panel.window.getFocusedSessionName = () => 'sort-check';
@@ -1255,12 +1255,12 @@ test('h2f: the per-turn system prompt names the focused session', async () => {
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
 
   const first = completionsRequests[0];
-  const systemMsg = first.messages.find((m) => m.role === 'system');
-  assert.match(systemMsg.content, /"sort-check"/, 'system prompt must name the focused session');
-  assert.match(systemMsg.content, /open\/expanded/i);
+  assert.match(first.context, /"sort-check"/, 'context must name the focused session');
+  assert.match(first.context, /open\/expanded/i);
+  assert.deepEqual(first.messages, [{ role: 'user', content: 'what about the one in focus?' }]);
 });
 
-test('h2f: the per-turn system prompt honestly reports no single focus on the all-sessions dashboard', async () => {
+test('h2f: the per-turn context honestly reports no single focus on the all-sessions dashboard', async () => {
   const { completionsRequests, fetchImpl } = makeListSessionsFetch([]);
   const panel = loadChatPanel({ fetchImpl });
   panel.window.getFocusedSessionName = () => null;
@@ -1270,9 +1270,9 @@ test('h2f: the per-turn system prompt honestly reports no single focus on the al
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
 
   const first = completionsRequests[0];
-  const systemMsg = first.messages.find((m) => m.role === 'system');
-  assert.match(systemMsg.content, /no single session/i);
-  assert.match(systemMsg.content, /all-sessions dashboard/i);
+  assert.match(first.context, /no single session/i);
+  assert.match(first.context, /all-sessions dashboard/i);
+  assert.deepEqual(first.messages, [{ role: 'user', content: 'what about the one in focus?' }]);
 });
 
 test('h2f: the next user turn re-reads focus, without a recursive request', async () => {
@@ -1299,10 +1299,12 @@ test('h2f: the next user turn re-reads focus, without a recursive request', asyn
   panel.els['chat-input'].value = 'next';
   panel.els['chat-send-btn']._fire('click');
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'next turn to finish' });
-  const firstSystem = completionsRequests[0].messages.find((m) => m.role === 'system').content;
-  const secondSystem = completionsRequests[1].messages.find((m) => m.role === 'system').content;
-  assert.match(firstSystem, /"alpha"/);
-  assert.match(secondSystem, /"beta"/);
+  assert.equal(completionsRequests.length, 2);
+  assert.match(completionsRequests[0].context, /"alpha"/);
+  assert.match(completionsRequests[1].context, /"beta"/);
+  assert.deepEqual(completionsRequests[0].messages, [{ role: 'user', content: 'hello' }]);
+  assert.deepEqual(completionsRequests[1].messages, [{ role: 'user', content: 'next' }],
+    'no system message or imported user/assistant/tool history on resume');
 });
 
 test('h2f: focus context line is omitted entirely when getFocusedSessionName is unavailable', async () => {
@@ -1316,8 +1318,23 @@ test('h2f: focus context line is omitted entirely when getFocusedSessionName is 
   panel.els['chat-send-btn']._fire('click');
   await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
 
-  assert.equal(completionsRequests[0].messages.some((m) => m.role === 'system'), false,
-    'no arbitrary agent instructions when focus hint is unavailable');
+  assert.equal(Object.hasOwn(completionsRequests[0], 'context'), false,
+    'no fabricated focus hint when the helper is unavailable');
+  assert.deepEqual(completionsRequests[0].messages, [{ role: 'user', content: 'hello' }]);
+});
+
+test('h2f: non-ASCII focus names stay within the 1024-byte context wire limit', async () => {
+  const { completionsRequests, fetchImpl } = makeListSessionsFetch([]);
+  const panel = loadChatPanel({ fetchImpl });
+  // Three UTF-8 bytes per UTF-16 code unit exercises the largest byte bound.
+  panel.window.getFocusedSessionName = () => '\u0800'.repeat(300);
+  await sendAndWait(panel);
+
+  const first = completionsRequests[0];
+  assert.ok(Buffer.byteLength(first.context, 'utf8') <= 1024);
+  assert.ok(first.context.includes('\u0800'.repeat(256)));
+  assert.equal(first.context.includes('\u0800'.repeat(257)), false);
+  assert.deepEqual(first.messages, [{ role: 'user', content: 'hello' }]);
 });
 
 // =======================================================================
@@ -2134,23 +2151,42 @@ function inputEvents(id = 'input-1', text = 'printf hello', extra = {}) {
     { session_name: 'scratch', text, enter: true, ...extra }, id);
 }
 
-test('v1: newest user only, session header resumes, UI transcript stays, New drops session', async () => {
-  const panel = loadChatPanel({ fetchImpl: async (url) => {
-    if (url === COMPLETIONS) return sseChunksResponse(finalAnswerChunks('answer'));
-    return jsonResponse(200, {});
-  } });
-  await sendAndWait(panel, 'first');
-  await sendAndWait(panel, 'second');
-  const requests = panel.fetchCalls.filter((c) => c.url === COMPLETIONS).map((c) => JSON.parse(c.opts.body));
-  assert.deepEqual(requests[0].muxplex_agent, { protocol: 1, browser_tools: true });
-  assert.deepEqual(requests[1].muxplex_agent, { protocol: 1, browser_tools: true, session_id: 'sdk-session' });
-  assert.deepEqual(requests[1].messages, [{ role: 'user', content: 'second' }]);
-  assert.equal(requests[1].tools, undefined);
-  assert.match(fullText(panel.els['chat-messages']), /first.*answer.*second.*answer/s);
-  panel.els['chat-new-btn']._fire('click');
-  await sendAndWait(panel, 'fresh');
-  assert.equal(JSON.parse(panel.fetchCalls.filter((c) => c.url === COMPLETIONS)[2].opts.body).muxplex_agent.session_id, undefined);
-});
+for (const focus of [
+  { label: 'focused session', name: 'scratch' },
+  { label: 'dashboard overview', name: null },
+  { label: 'unavailable focus helper', name: undefined },
+]) {
+  test(`v1: newest user only, session resumes, UI transcript stays, New drops session (${focus.label})`, async () => {
+    const panel = loadChatPanel({ fetchImpl: async (url) => {
+      if (url === COMPLETIONS) return sseChunksResponse(finalAnswerChunks('answer'));
+      return jsonResponse(200, {});
+    } });
+    if (focus.name !== undefined) panel.window.getFocusedSessionName = () => focus.name;
+    await sendAndWait(panel, 'first');
+    await sendAndWait(panel, 'second');
+    assert.match(fullText(panel.els['chat-messages']), /first.*answer.*second.*answer/s);
+    panel.els['chat-new-btn']._fire('click');
+    await sendAndWait(panel, 'fresh');
+
+    const requests = panel.fetchCalls.filter((c) => c.url === COMPLETIONS).map((c) => JSON.parse(c.opts.body));
+    assert.equal(requests.length, 3, 'one request per user turn');
+    assert.deepEqual(requests[0].muxplex_agent, { protocol: 1, browser_tools: true });
+    assert.deepEqual(requests[1].muxplex_agent, { protocol: 1, browser_tools: true, session_id: 'sdk-session' });
+    assert.deepEqual(requests[2].muxplex_agent, { protocol: 1, browser_tools: true });
+    requests.forEach((body, i) => {
+      assert.deepEqual(body.messages, [{ role: 'user', content: ['first', 'second', 'fresh'][i] }],
+        'exactly one current user; no system message or imported presentation history');
+      assert.equal(body.tools, undefined);
+      if (focus.name === undefined) {
+        assert.equal(Object.hasOwn(body, 'context'), false);
+      } else {
+        assert.ok(body.context, 'both focused and unfocused hints are nonempty');
+        assert.match(body.context, focus.name ? /"scratch".*open\/expanded/ : /no single session.*all-sessions dashboard/);
+        assert.ok(Buffer.byteLength(body.context, 'utf8') <= 1024);
+      }
+    });
+  });
+}
 
 test('v1: raw SDK tool_call observations never execute or create recursive requests', async () => {
   const raw = { choices: [{ delta: { tool_calls: [{
@@ -2519,7 +2555,11 @@ test('v1: capture boundary scrubs nested capabilities, escaped JSON and earlier 
   // Wait for the init-time response body to be captured before starting SSE.
   await new Promise((r) => setTimeout(r, 0));
   capturedConsole.error('earlier echo: ' + token + ' ' + alias);
+  panel.window.getFocusedSessionName = () => token;
   await sendAndWait(panel);
+  const request = JSON.parse(panel.fetchCalls.find((c) => c.url === COMPLETIONS).opts.body);
+  assert.ok(request.context.includes(token), 'capture scrubbing must not mutate the wire focus hint');
+  assert.deepEqual(request.messages, [{ role: 'user', content: 'hello' }]);
   capturedConsole.warn({ nested: JSON.stringify({ capability: alias }), echo: token });
   const sent = resultPayload(panel);
   assert.equal(sent.result_token, token, 'capture redaction must not alter callback authority');
