@@ -1,3 +1,36 @@
+## v0.63.0 (2026-10-02)
+
+### Changed
+
+- **Agent SDK:** upgrade amplifier-agent from 0.12.0 to 0.20.0 and use its
+  supported public Python API. The five existing browser tools return results
+  within the same live turn; follow-ups resume durable SDK sessions instead of
+  importing browser tool history.
+- **Credential compatibility:** preserve existing credential files and
+  environment-variable precedence, with atomic private writes and provider-backed
+  model availability checks.
+- **Coordinated packaging:** release `muxplex` and `muxplex-client` 0.63.0
+  together. Base muxplex remains Python 3.11+; optional Agent support requires
+  Python 3.12+.
+
+### Added
+
+- **Stop agent turn:** cancel from the chat panel or terminal-input confirmation
+  dialog. Stop prevents queued actions but cannot undo an action already issued.
+
+### Fixed
+
+- **Agent recovery and diagnostics:** preserve cancellation evidence and
+  failed-turn usage, redact callback capabilities from exported records, and
+  refuse unsafe replay of interrupted external effects.
+
+### Upgrade Notes
+
+- **Agent chat integration only:** reload muxplex and start a new conversation
+  after upgrading. The callback/session protocol replaces legacy tool-history
+  import and client-supplied tool definitions. Ordinary stateless text/image
+  requests and the existing public session APIs remain supported.
+
 ## v0.62.0 (2026-09-18)
 
 ### Changed
