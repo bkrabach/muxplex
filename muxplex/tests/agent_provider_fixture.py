@@ -32,9 +32,11 @@ def require_container() -> None:
     assert os.environ.get("MUXPLEX_RUN_SDK_TESTS") == "1", (
         "Manager must explicitly set MUXPLEX_RUN_SDK_TESTS=1 inside the combined DTU."
     )
-    assert Path("/.dockerenv").exists() or Path("/run/.containerenv").exists(), (
-        "SDK/provider socket tests are container-only; do not run them on the host."
-    )
+    systemd_marker = Path("/run/systemd/container")
+    lxc = systemd_marker.is_file() and systemd_marker.read_text().strip() == "lxc"
+    assert (
+        Path("/.dockerenv").exists() or Path("/run/.containerenv").exists() or lxc
+    ), "SDK/provider socket tests are container-only; do not run them on the host."
 
 
 def frames(model: str, tool: str | None, ordinal: int):
