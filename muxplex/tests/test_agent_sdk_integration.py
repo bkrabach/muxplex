@@ -14,6 +14,7 @@ import sys
 
 import httpx
 import pytest
+from itsdangerous import TimestampSigner
 
 from muxplex import main
 from muxplex.agent_embedded import credentials, runner
@@ -109,7 +110,13 @@ async def test_real_api_uses_tagged_sdk_and_returns_run_headers(
     async with fixture.running() as url:
         monkeypatch.setenv("ANTHROPIC_BASE_URL", url)
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(main.app), base_url="http://127.0.0.1"
+            transport=httpx.ASGITransport(main.app),
+            base_url="http://127.0.0.1",
+            cookies={
+                "muxplex_session": TimestampSigner(main._auth_secret)
+                .sign("fixture-owner")
+                .decode()
+            },
         ) as client:
             response = await client.post(
                 "/api/agent/chat/completions", json=request(browser=False)
@@ -427,6 +434,10 @@ async def test_real_sdk_measured_work_then_failure_or_cancel_projects_usage_once
                     if state == "cancelled":
                         await run.turn.cancel()  # public cancellation, same event pump
                     else:
+                        # Continue policy allows a model to explain an uncertain
+                        # effect. Fail that real follow-up HTTP request instead
+                        # of assuming ToolOutcomeUnknown itself ends the turn.
+                        fixture.failure = 400
                         runner.submit_browser_result(
                             {
                                 **{
@@ -438,13 +449,14 @@ async def test_real_sdk_measured_work_then_failure_or_cancel_projects_usage_once
                             },
                             owner="owner-a",
                         )
-    assert calls == 1 and len(fixture.requests) == 1
+    assert calls == 1
+    assert len(fixture.requests) == (1 if state == "cancelled" else 2)
     assert run.terminal.state == state
     payloads = [payload for chunk in output if (payload := data(chunk))]
     projected = [payload for payload in payloads if "usage" in payload]
     assert len(projected) == 1
     assert projected[0]["error"]["code"] == (
-        "turn_cancelled" if state == "cancelled" else "tool_completion_unknown"
+        "turn_cancelled" if state == "cancelled" else "provider_failed"
     )
     assert projected[0]["usage"] == {
         "prompt_tokens": 25,

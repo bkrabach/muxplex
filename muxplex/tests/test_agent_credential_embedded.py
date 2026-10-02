@@ -131,11 +131,6 @@ def _isolate_agent_credentials(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _force_embedded_mode(monkeypatch):
-    monkeypatch.setattr("muxplex.agent_embedded.is_embedded_mode", lambda: True)
-
-
-@pytest.fixture(autouse=True)
 def _assume_library_available(monkeypatch):
     async def available():
         return None

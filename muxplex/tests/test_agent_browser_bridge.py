@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -177,13 +178,19 @@ async def test_closed_bridge_and_deadlines_never_retry_unknown_effects():
     assert bridge.pending["call"].future.done()
 
 
-async def test_operator_cookie_is_required_even_for_loopback():
+async def test_operator_cookie_is_required_even_for_loopback(monkeypatch):
+    monkeypatch.setattr(
+        "muxplex.auth.AuthMiddleware._check_credentials",
+        lambda self, username, password: True,
+    )
     body = {
         "messages": [{"role": "user", "content": "hi"}],
         "muxplex_agent": {"protocol": 1, "browser_tools": True},
     }
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(main.app), base_url="http://127.0.0.1"
+        transport=httpx.ASGITransport(main.app),
+        base_url="http://127.0.0.1",
+        auth=httpx.BasicAuth("fixture-operator", "fixture-password"),
     ) as client:
         chat = await client.post("/api/agent/chat/completions", json=body)
         reply = await client.post("/api/agent/browser-tool-results", json=result())
@@ -193,7 +200,8 @@ async def test_operator_cookie_is_required_even_for_loopback():
 
 async def test_deeply_nested_json_is_a_typed_400():
     cookie = TimestampSigner(main._auth_secret).sign("fixture-owner").decode()
-    nested = '{"content":' + "[" * 1500 + "0" + "]" * 1500 + "}"
+    depth = sys.getrecursionlimit() + 100
+    nested = '{"content":' + "[" * depth + "0" + "]" * depth + "}"
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(main.app),
         base_url="http://127.0.0.1",
@@ -210,13 +218,14 @@ async def test_deeply_nested_json_is_a_typed_400():
 async def test_bearer_only_caller_cannot_create_browser_capability_or_submit_result(
     monkeypatch,
 ):
-    # Loopback retains the existing shared auth bypass; the callback gate still
-    # cannot mistake a Bearer header for a verified browser cookie.
+    # A valid shared Bearer credential still cannot authorize browser callbacks.
+    monkeypatch.setattr("muxplex.auth.load_federation_key", lambda: "fixture-bearer")
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(main.app),
         base_url="http://127.0.0.1",
         headers={"authorization": "Bearer fixture-federation-key"},
     ) as client:
+        client.headers["authorization"] = "Bearer fixture-bearer"
         reply = await client.post("/api/agent/browser-tool-results", json=result())
     assert reply.status_code == 403
 
