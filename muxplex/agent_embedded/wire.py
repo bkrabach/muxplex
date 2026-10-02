@@ -1,235 +1,122 @@
-"""OpenAI Chat Completions wire-shape helpers -- ported subset.
-
-Ported from amplifier-agent's sidecar-oriented ``amplifier_agent_http``
-package (``_wire.py`` chunk builders + ``_event_translator.py``'s event
-translation), for the same reason as ``host_tool_glue.py``: the embedded
-path has zero import dependency on that package. Chunk shapes are
-byte-for-byte compatible with what ``main.py``'s sidecar proxy has always
-relayed -- chat.js cannot tell embedded and sidecar output apart, which is
-the whole point of this pass.
-
-Deliberately NOT ported (no consumer in ``frontend/chat.js`` -- verified,
-not assumed): ``reasoning_delta_chunk`` / ``thinking/delta`` translation,
-``activeMode`` (mode support isn't part of the embedded path this pass),
-and ``cost_usd`` accumulation. Dropped the same as every other
-internal-only kernel event chat.js already ignores.
-"""
+"""OpenAI-compatible text SSE plus typed, non-successful failure frames."""
 
 from __future__ import annotations
 
 import json
 import time
 import uuid
-from typing import Any
+from typing import Any, cast
+
+# Optional SDK imports are lazy in public_error.
+# pyright: reportMissingImports=false
 
 
 def new_chunk_id() -> str:
-    """Stable per-response chunk id, OpenAI shape ``chatcmpl-XXXXX``."""
     return f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
 
-def _base_chunk(chunk_id: str, model: str) -> dict[str, Any]:
+def _chunk(chunk_id: str, model: str, delta: dict, finish: str | None = None) -> dict:
     return {
         "id": chunk_id,
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
     }
 
 
-def role_chunk(chunk_id: str, model: str) -> dict[str, Any]:
-    """First chunk of a stream -- announces the assistant role, no content."""
-    chunk = _base_chunk(chunk_id, model)
-    chunk["choices"] = [
-        {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
-    ]
-    return chunk
+def role_chunk(chunk_id: str, model: str) -> dict:
+    return _chunk(chunk_id, model, {"role": "assistant"})
 
 
-def content_delta_chunk(chunk_id: str, model: str, content: str) -> dict[str, Any]:
-    chunk = _base_chunk(chunk_id, model)
-    chunk["choices"] = [
-        {"index": 0, "delta": {"content": content}, "finish_reason": None}
-    ]
-    return chunk
+def content_delta_chunk(chunk_id: str, model: str, content: str) -> dict:
+    return _chunk(chunk_id, model, {"content": content})
 
 
-def tool_call_delta_chunk(
-    chunk_id: str,
-    model: str,
-    *,
-    index: int,
-    tool_call_id: str,
-    name: str,
-    arguments: str,
-) -> dict[str, Any]:
-    """A tool-call delta chunk. ``arguments`` MUST be a JSON-serialized
-    string (not a dict) per OpenAI's wire."""
-    chunk = _base_chunk(chunk_id, model)
-    chunk["choices"] = [
-        {
-            "index": 0,
-            "delta": {
-                "tool_calls": [
-                    {
-                        "index": index,
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {"name": name, "arguments": arguments},
-                    }
-                ],
-            },
-            "finish_reason": None,
-        }
-    ]
-    return chunk
-
-
-def _usage_block(
-    *, prompt_tokens: int, completion_tokens: int, cached_tokens: int = 0
-) -> dict[str, Any]:
-    usage: dict[str, Any] = {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
-    }
-    if prompt_tokens or completion_tokens:
-        usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
-    return usage
-
-
-def stop_chunk(
-    chunk_id: str,
-    model: str,
-    *,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    cached_tokens: int = 0,
-) -> dict[str, Any]:
-    """Final chunk for a turn that ended normally -- finish_reason: stop."""
-    chunk = _base_chunk(chunk_id, model)
-    chunk["choices"] = [{"index": 0, "delta": {}, "finish_reason": "stop"}]
-    chunk["usage"] = _usage_block(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        cached_tokens=cached_tokens,
-    )
-    return chunk
-
-
-def tool_calls_stop_chunk(
-    chunk_id: str,
-    model: str,
-    *,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    cached_tokens: int = 0,
-) -> dict[str, Any]:
-    """Terminal chunk for a turn that ends with a host-tool yield --
-    finish_reason: tool_calls. This is the signal chat.js watches for to
-    run the tool host-side and re-POST with the result."""
-    chunk = _base_chunk(chunk_id, model)
-    chunk["choices"] = [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
-    chunk["usage"] = _usage_block(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        cached_tokens=cached_tokens,
-    )
-    return chunk
-
-
-def sse_data(chunk: dict[str, Any]) -> str:
-    return f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n"
-
-
-def sse_done() -> str:
-    return "data: [DONE]\n\n"
-
-
-def sse_keepalive() -> str:
-    return ": keepalive\n\n"
-
-
-def sse_error(message: str) -> str:
-    """Fatal, whole-turn error frame. Matches ``main.py``'s
-    sidecar-unreachable error shape exactly (a top-level ``error`` field,
-    no ``choices``), so chat.js's ``chunk.error`` branch -- checked BEFORE
-    its ``!choice`` guard -- renders both transports' failures identically.
-    """
-    return (
-        sse_data({"error": {"message": message, "type": "server_error"}}) + sse_done()
-    )
-
-
-def translate_event(
-    event: dict[str, Any], chunk_id: str, model_id: str
-) -> dict[str, Any] | None:
-    """Kernel display event -> OpenAI SSE chunk dict, or ``None`` to drop.
-
-    Ported subset of ``_event_translator.translate_event``: ``result/delta``,
-    ``tool_calls/delta``, ``error``. Everything else (``thinking/*``,
-    ``tool/started``, ``tool/completed``, ``result/final``, ``progress``,
-    ``usage``) is dropped here -- ``usage`` is consumed separately by
-    ``extract_usage`` for the terminal chunk.
-    """
-    event_type = event.get("type", "")
-
-    if event_type == "result/delta":
-        text = event.get("text", "")
-        if isinstance(text, str) and text:
-            return content_delta_chunk(chunk_id, model_id, text)
+def usage_block(usage: Any) -> dict | None:
+    """SDK tokens_in includes cache reads, excludes writes; never sum snapshots."""
+    if usage is None or not usage.entries:
         return None
-
-    if event_type == "tool_calls/delta":
-        name = event.get("name", "")
-        if not isinstance(name, str) or not name:
-            return None
-        tool_call_id = event.get("tool_call_id", "") or ""
-        arguments = event.get("arguments", "{}") or "{}"
-        try:
-            index = int(event.get("index", 0) or 0)
-        except (TypeError, ValueError):
-            index = 0
-        return tool_call_delta_chunk(
-            chunk_id,
-            model_id,
-            index=index,
-            tool_call_id=str(tool_call_id),
-            name=name,
-            arguments=str(arguments),
+    entries = usage.entries
+    # Missing is unknown, not a measured zero. Writes are included in the
+    # OpenAI-facing prompt total only when known, just like input/output.
+    prompt = (
+        sum(entry.tokens_in + entry.cache_write_tokens for entry in entries)
+        if all(
+            entry.tokens_in is not None and entry.cache_write_tokens is not None
+            for entry in entries
         )
-
-    if event_type == "error":
-        code = event.get("code", "")
-        message = event.get("message", "Unknown error")
-        text = f"\n\n[amplifier-agent error: {code} {message}]\n"
-        return content_delta_chunk(chunk_id, model_id, text)
-
-    return None
-
-
-def extract_usage(event: dict[str, Any]) -> dict[str, Any] | None:
-    """If ``event`` is a ``usage`` event, extract token counts in OpenAI
-    shape; otherwise ``None``. See ``_event_translator.extract_usage`` for
-    the full accounting of Anthropic's three-bucket cache token split --
-    this port keeps the token math, drops the ``cost_usd`` extension (no
-    consumer in chat.js)."""
-    if event.get("type") != "usage":
-        return None
-
-    def _to_int(value: Any) -> int:
-        try:
-            return int(value) if value is not None else 0
-        except (TypeError, ValueError):
-            return 0
-
-    new_input = _to_int(event.get("inputTokens"))
-    cache_read = _to_int(event.get("cacheReadTokens"))
-    cache_write = _to_int(event.get("cacheWriteTokens"))
-    output = _to_int(event.get("outputTokens"))
-    prompt_total = new_input + cache_read + cache_write
+        else None
+    )
+    completion = (
+        sum(entry.tokens_out for entry in entries)
+        if all(entry.tokens_out is not None for entry in entries)
+        else None
+    )
+    cached = (
+        sum(entry.cache_read_tokens for entry in entries)
+        if all(entry.cache_read_tokens is not None for entry in entries)
+        else None
+    )
     return {
-        "prompt_tokens": prompt_total,
-        "completion_tokens": output,
-        "cached_tokens": cache_read,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion
+        if prompt is not None and completion is not None
+        else None,
+        "prompt_tokens_details": {"cached_tokens": cached},
     }
+
+
+def stop_chunk(chunk_id: str, model: str, *, usage: Any = None) -> dict:
+    chunk = _chunk(chunk_id, model, {}, "stop")
+    if (block := usage_block(usage)) is not None:
+        chunk["usage"] = block
+    return chunk
+
+
+def sse_data(chunk: dict) -> bytes:
+    return f"data: {json.dumps(chunk, separators=(',', ':'), allow_nan=False)}\n\n".encode()
+
+
+def sse_done() -> bytes:
+    return b"data: [DONE]\n\n"
+
+
+def sse_keepalive() -> bytes:
+    return b": keepalive\n\n"
+
+
+def error_envelope(
+    code: str, message: str, remedy: str, *, category: str = "server_error"
+) -> dict:
+    return {
+        "error": {"type": category, "code": code, "message": message, "remedy": remedy}
+    }
+
+
+def public_error(exc: Exception) -> dict:
+    # Only explicitly typed errors are exposed; raw provider/transport errors
+    # can contain credentials or callback capability data.
+    from .errors import AgentRequestError
+
+    if isinstance(exc, AgentRequestError):
+        return exc.envelope()
+    try:
+        from amplifier_agent import AgentError
+    except ImportError:
+        return error_envelope(
+            "agent_unavailable",
+            "The Agent isn't installed here.",
+            "Run muxplex ensure-agent.",
+        )
+    if isinstance(exc, AgentError):
+        error = cast(Any, exc)  # optional SDK may be absent in a base-only type-check
+        return error_envelope(
+            error.code, error.message, error.remedy, category=error.category
+        )
+    return error_envelope(
+        "agent_failed",
+        "The agent turn failed.",
+        "Start a new conversation; do not repeat an uncertain terminal action.",
+    )

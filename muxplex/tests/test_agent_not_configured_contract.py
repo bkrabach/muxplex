@@ -116,7 +116,10 @@ def test_chat_js_branches_on_the_same_literal_the_server_sends():
 def test_chat_completions_503_body_is_json_not_sse(_unavailable):
     """Unchanged contract, pinned so the typing change above cannot
     accidentally turn the refusal into a stream."""
-    resp = _authed_client().post("/api/agent/chat/completions", json={"messages": []})
+    resp = _authed_client().post(
+        "/api/agent/chat/completions",
+        json={"messages": [{"role": "user", "content": "hi"}]},
+    )
     assert resp.headers["content-type"].startswith("application/json")
     json.loads(resp.content)  # parses -- not an SSE frame
 
@@ -165,18 +168,15 @@ async def test_a_genuinely_missing_library_reports_exactly_that_message(monkeypa
     """Pin the constant to the real code path, so the two assertions above
     cannot pass against a constant nothing actually uses.
 
-    Simulates the absence structurally rather than by stubbing
-    `_get_prepared` itself (which would assert nothing): `None` in
-    `sys.modules` makes a real `import amplifier_agent_lib` raise
-    ImportError, so `_get_prepared`'s OWN try/except is what runs. This
+    Simulates the absence structurally rather than by stubbing the
+    checker itself: `None` in `sys.modules` makes the real public
+    `import amplifier_agent` raise ImportError, so its OWN try/except runs. This
     works identically whether or not the extra is installed -- CI (which
     installs it) exercises the same branch a bare install hits.
     """
     import sys
 
-    monkeypatch.setattr(agent_embedded_runner, "_prepared", None)
-    monkeypatch.setitem(sys.modules, "amplifier_agent_lib", None)
-    monkeypatch.setitem(sys.modules, "amplifier_agent_lib._runtime", None)
+    monkeypatch.setitem(sys.modules, "amplifier_agent", None)
 
     reason = await agent_embedded_runner.library_unavailable_reason()
     assert reason == agent_embedded_runner.LIBRARY_MISSING_MESSAGE

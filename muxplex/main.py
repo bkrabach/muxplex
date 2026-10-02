@@ -35,6 +35,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse, Response
+from starlette.background import BackgroundTask
 from starlette.types import Scope
 from tmux_kit.bell import build_alert_bell_hook
 from tmux_kit.names import SESSION_NAME_MAX_LEN
@@ -46,6 +47,10 @@ from muxplex import focus, followups, tmux_config
 from muxplex import ttyd as ttyd_mod
 from muxplex.agent_embedded import credentials as agent_embedded_credentials
 from muxplex.agent_embedded import runner as agent_embedded_runner
+from muxplex.agent_embedded import wire as agent_wire
+from muxplex.agent_embedded.bridge import MAX_RESULT_BYTES
+from muxplex.agent_embedded.errors import AgentRequestError
+from muxplex.agent_embedded.message_shape import browser_protocol, validate_messages
 from muxplex.auth import (
     AuthMiddleware,
     authenticate_pam,
@@ -1209,6 +1214,8 @@ async def lifespan(app: FastAPI):
                 asyncio.gather(*to_cancel, return_exceptions=True), timeout=2.0
             )
     _poll_task = None
+
+    await agent_embedded_runner.shutdown()
 
     try:
         await asyncio.wait_for(kill_all_ttyd(), timeout=3.0)
@@ -6369,6 +6376,61 @@ class _NoCacheStaticFiles(StaticFiles):
 # every other /api/ route.
 
 
+def _agent_cookie_owner(request: Request) -> str:
+    """Browser capabilities require a VERIFIED cookie, even from loopback.
+
+    Neither shared middleware's localhost bypass nor federation Bearer auth
+    confers browser callback/resume authority. Never retain the raw cookie.
+    """
+    cookie = request.cookies.get("muxplex_session")
+    if not cookie or not verify_session_cookie(_auth_secret, cookie, _auth_ttl):
+        raise AgentRequestError(
+            "operator_cookie_required",
+            "Browser tools require a verified operator session cookie.",
+            "Sign in to muxplex in this browser.",
+            403,
+        )
+    return hashlib.sha256(cookie.encode()).hexdigest()
+
+
+async def _agent_json_body(request: Request, *, limit: int) -> dict:
+    """Bound actual bytes, not a caller-controlled Content-Length header."""
+    chunks = bytearray()
+    async for chunk in request.stream():
+        chunks.extend(chunk)
+        if len(chunks) > limit:
+            raise AgentRequestError(
+                "request_too_large",
+                "Agent request exceeds the byte limit.",
+                "Send less content.",
+                413,
+            )
+    try:
+        body = json.loads(chunks)
+        # Escaped lone surrogates must not reach byte counts/provider encoding.
+        json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+        raise AgentRequestError(
+            "invalid_json", "Invalid JSON request body.", "Send a JSON object."
+        ) from exc
+    if not isinstance(body, dict):
+        raise AgentRequestError(
+            "invalid_json", "Request body must be a JSON object.", "Send a JSON object."
+        )
+    return body
+
+
+@app.post("/api/agent/browser-tool-results")
+async def agent_browser_tool_results(request: Request) -> Response:
+    try:
+        owner = _agent_cookie_owner(request)
+        body = await _agent_json_body(request, limit=MAX_RESULT_BYTES + 4096)
+        agent_embedded_runner.submit_browser_result(body, owner=owner)
+    except AgentRequestError as exc:
+        return JSONResponse(exc.envelope(), status_code=exc.status)
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/agent/chat/completions")
 async def agent_chat_completions_proxy(request: Request) -> Response:
     """Run the turn IN-PROCESS via ``muxplex.agent_embedded`` -- no
@@ -6378,27 +6440,12 @@ async def agent_chat_completions_proxy(request: Request) -> Response:
     usable yet, otherwise stream the turn.
     """
     try:
-        body = json.loads(await request.body())
-    except json.JSONDecodeError:
-        return JSONResponse(
-            {
-                "error": {
-                    "message": "invalid JSON request body",
-                    "type": "invalid_request_error",
-                }
-            },
-            status_code=400,
-        )
-    if not isinstance(body, dict):
-        return JSONResponse(
-            {
-                "error": {
-                    "message": "request body must be a JSON object",
-                    "type": "invalid_request_error",
-                }
-            },
-            status_code=400,
-        )
+        body = await _agent_json_body(request, limit=32 * 1024 * 1024)
+        browser = browser_protocol(body)
+        owner = _agent_cookie_owner(request) if browser else ""
+        validate_messages(body, browser=browser)
+    except AgentRequestError as exc:
+        return JSONResponse(exc.envelope(), status_code=exc.status)
 
     # muxplex-at9: EVERY reason check_available() can give -- amplifier-agent
     # not installed, no provider credential -- means "the Agent was never set
@@ -6411,23 +6458,35 @@ async def agent_chat_completions_proxy(request: Request) -> Response:
     # v0.48.1 fix classified this by regexing the message prose, and the
     # sidecar -> embedded refactor silently un-fixed it by rewording that
     # prose. See AGENT_NOT_CONFIGURED_ERROR_TYPE's own comment.
-    unavailable_reason = await agent_embedded_runner.check_available()
+    try:
+        unavailable_reason = await agent_embedded_runner.check_available()
+    except Exception as exc:
+        return JSONResponse(agent_wire.public_error(exc), status_code=503)
     if unavailable_reason:
         return JSONResponse(
             {
                 "error": {
                     "message": unavailable_reason,
                     "type": AGENT_NOT_CONFIGURED_ERROR_TYPE,
+                    "code": AGENT_NOT_CONFIGURED_ERROR_TYPE,
+                    "remedy": "Use Settings -> Agent or ask the operator to run muxplex ensure-agent.",
                 }
             },
             status_code=503,
         )
 
-    client_session_id = request.headers.get("x-client-session-id", "")
-    generator = agent_embedded_runner.stream_embedded_chat_completion(
-        body, client_session_id=client_session_id
+    try:
+        run = await agent_embedded_runner.prepare_chat(body, owner=owner)
+    except AgentRequestError as exc:
+        return JSONResponse(exc.envelope(), status_code=exc.status)
+    except Exception as exc:
+        return JSONResponse(agent_wire.public_error(exc), status_code=502)
+    return StreamingResponse(
+        run.stream(),
+        media_type="text/event-stream",
+        headers=run.headers,
+        background=BackgroundTask(run.close),
     )
-    return StreamingResponse(generator, media_type="text/event-stream")
 
 
 app.mount(
