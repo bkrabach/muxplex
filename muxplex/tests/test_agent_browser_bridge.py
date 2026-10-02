@@ -212,7 +212,10 @@ async def test_deeply_nested_json_is_a_typed_400():
             content=nested,
             headers={"content-type": "application/json"},
         )
-    assert reply.status_code == 400 and reply.json()["error"]["code"] == "invalid_json"
+    # Valid, deeply nested JSON may parse without recursion on this runtime;
+    # its non-string content still must fail the callback schema, never settle.
+    assert reply.status_code == 400
+    assert reply.json()["error"]["code"] in {"invalid_json", "invalid_tool_result"}
 
 
 async def test_bearer_only_caller_cannot_create_browser_capability_or_submit_result(

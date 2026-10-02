@@ -20,7 +20,8 @@ def test_chat_v1_has_no_recursive_tool_history_request() -> None:
     assert "await runTurn(" not in turn
     assert 'role: "tool"' not in chat
     assert "toolCallsByIndex" not in chat
-    assert ".concat([userMessage])" in turn
+    assert "messages: [userMessage]" in turn
+    assert "body.context = focusLine" in turn
     assert "queueBrowserTool(turn, chunk.muxplex_browser_tool)" in turn
 
 

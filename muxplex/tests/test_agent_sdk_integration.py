@@ -458,11 +458,14 @@ async def test_real_sdk_measured_work_then_failure_or_cancel_projects_usage_once
     assert projected[0]["error"]["code"] == (
         "turn_cancelled" if state == "cancelled" else "provider_failed"
     )
+    # A failed provider request makes the SDK's cumulative totals unknown.
+    # Keep that authoritative snapshot rather than reusing prior lower totals.
+    known = state == "cancelled"
     assert projected[0]["usage"] == {
-        "prompt_tokens": 25,
-        "completion_tokens": 2,
-        "total_tokens": 27,
-        "prompt_tokens_details": {"cached_tokens": 3},
+        "prompt_tokens": 25 if known else None,
+        "completion_tokens": 2 if known else None,
+        "total_tokens": 27 if known else None,
+        "prompt_tokens_details": {"cached_tokens": 3 if known else None},
     }
     assert b"data: [DONE]\n\n" not in output
     assert not any(
