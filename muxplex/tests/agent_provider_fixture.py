@@ -34,9 +34,9 @@ def require_container() -> None:
     )
     systemd_marker = Path("/run/systemd/container")
     lxc = systemd_marker.is_file() and systemd_marker.read_text().strip() == "lxc"
-    assert (
-        Path("/.dockerenv").exists() or Path("/run/.containerenv").exists() or lxc
-    ), "SDK/provider socket tests are container-only; do not run them on the host."
+    assert Path("/.dockerenv").exists() or Path("/run/.containerenv").exists() or lxc, (
+        "SDK/provider socket tests are container-only; do not run them on the host."
+    )
 
 
 def frames(model: str, tool: str | None, ordinal: int):

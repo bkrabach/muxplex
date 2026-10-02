@@ -1089,6 +1089,33 @@ fixture. Proven on this host: the full suite (`.venv/bin/python -m pytest
 muxplex/tests/`) passes with the real production muxplex listening on 8088
 the entire time, its PID unchanged before and after (verified via `ss -ltnp`).
 
+### Embedded agent: public SDK and same-turn browser callbacks
+
+The optional agent uses the tagged `amplifier_agent` public Python SDK from
+`packages/python`; Python 3.11 remains supported without it. Do not import the
+old library/CLI, kernel, or engine internals. Pass only the five browser tools,
+with explicit empty skill/MCP lists: omitted SDK tools grant built-in host
+authority.
+
+Browser protocol v1 sends one new user message plus a bounded `context` hint,
+then resumes the returned durable session. Callback results settle that same
+turn through `/api/agent/browser-tool-results`; never re-import tool history or
+replay terminal effects. Results require the initiating verified operator cookie
+and a per-call capability. Keep terminal confirmation and `/input` fences.
+Saved credentials remain env-first with a provenance-aware, stable service-wide
+fallback; never swap secret environment values around an awaited construction.
+
+Run the real installed-SDK gate separately from the default suite, inside the
+DTU with the agent extra installed:
+
+```bash
+MUXPLEX_RUN_SDK_TESTS=1 .venv/bin/pytest -q -m integration muxplex/tests/test_agent_sdk_integration.py
+```
+
+This gate uses a container-local provider HTTP fixture, not live inference.
+Keep its factory, engine, and provider unmocked. SDK usage snapshots replace
+prior values; unknown counters must remain unknown.
+
 ### Run it in an isolated environment
 
 ```

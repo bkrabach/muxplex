@@ -28,13 +28,16 @@ def test_chat_v1_has_no_recursive_tool_history_request() -> None:
 def test_chat_stop_is_reachable_inside_native_confirmation_dialog() -> None:
     """Native showModal() makes header controls inert; Stop must live inside it."""
     html = JS_PATH.with_name("index.html").read_text()
-    dialog = html.split('<dialog id="chat-confirm-dialog"', 1)[1].split(
-        "</dialog>", 1
-    )[0]
+    dialog = html.split('<dialog id="chat-confirm-dialog"', 1)[1].split("</dialog>", 1)[
+        0
+    ]
     assert 'id="chat-confirm-stop-btn"' in dialog
     chat = JS_PATH.with_name("chat.js").read_text()
     assert 'var confirmStopBtn = $("chat-confirm-stop-btn")' in chat
-    assert 'confirmStopBtn.addEventListener("click", function () { cancelTurn(true); })' in chat
+    assert (
+        'confirmStopBtn.addEventListener("click", function () { cancelTurn(true); })'
+        in chat
+    )
 
 
 # ── Palette state variables must be removed ──────────────────────────────────
