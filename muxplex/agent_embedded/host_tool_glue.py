@@ -1,227 +1,210 @@
 # pyright: reportMissingImports=false
-# amplifier_core arrives only with amplifier-agent, an OPTIONAL dependency
-# (pyproject.toml's `agent` extra). Both of this file's references to it are
-# already deliberately non-eager -- `ToolResult` under TYPE_CHECKING, and
-# `HookResult` lazily inside mount_host_tool_hook() -- for the reason spelled
-# out in full at the import block below. pyright therefore cannot resolve the
-# module in any environment that hasn't installed the extra (`uv sync --extra
-# dev`, CI's own recipe, and every fresh install before `ensure_agent()` runs).
-# That is the intended state, not a missing-dependency bug, so it is suppressed
-# at file level exactly as the sibling runner.py does -- rather than by adding a
-# hard dependency, or by chasing per-line `# type: ignore` comments through
-# ruff's import reformatting.
-"""Host-tool yield glue -- ported into muxplex's own code.
+"""The five server-owned browser tools, copied from chat.js's existing catalog.
 
-Ported (not imported) from amplifier-agent's sidecar-oriented packages:
-
-  * ``HostToolYield``       <- amplifier_agent_http/_host_tool_signal.py
-  * ``HostToolProxy``       <- amplifier_agent_lib/bundle/host_tool_proxy.py
-  * ``mount_host_tool_hook``<- amplifier_agent_lib/bundle/host_tool_hook.py
-
-``HostToolProxy`` and the hook already lived in the (staying) *lib*
-package; only the marker exception lived in *http* (the package slated
-for deletion once the sidecar itself is retired -- a later pass, not this
-one). Porting all three here means the embedded path has zero import
-dependency on ``amplifier_agent_http`` for the one piece of behavior that
-package's own eventual removal would otherwise break silently.
-
-Mechanism, restated for this file's own docstring so it stands alone:
-
-chat.js declares six tools on every turn (its ``TOOLS`` array) that
-amplifier itself never executes -- the browser does, over its own
-``/api/*`` fetch calls, under the user's ``muxplex_session`` cookie. When
-the model picks one of these, the kernel calls the mounted ``Tool``'s
-``execute()``, which has nothing real to run. ``HostToolProxy.execute()``
-raises ``HostToolYield`` to escape the orchestrator loop cleanly.
-
-``HostToolYield`` deliberately subclasses ``BaseException`` (not
-``Exception``) so it slips past the kernel's own narrow ``except
-Exception`` guards at the tool-dispatch and orchestrator-loop safety nets.
-It does NOT, however, survive the ``AmplifierSession.execute()`` bridge:
-that bridge collapses *any* exception crossing the Python<->Rust boundary
-into a plain ``RuntimeError``, losing the original type. That is why the
-caller (``runner.py``) cannot ``except HostToolYield`` at the call site --
-it must instead read the ``yield_state`` side-channel dict this module's
-hook writes into on ``tool:pre``, *before* the proxy raises.
+Only these callbacks are offered. SDK tool_call events are observations, not
+another dispatch path. No shell/filesystem tool, skill, or MCP authority.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-from typing import TYPE_CHECKING, Any
+from copy import deepcopy
+from typing import Any
 
-# amplifier-agent (and its own amplifier_core dependency) is an OPTIONAL
-# extra -- see pyproject.toml's `agent` extra and cli.ensure_agent's module
-# docstring for why a bare `uv tool install muxplex` (PyPI OR git) never
-# gets it on its own. This module is imported at RUNNER.PY'S OWN module
-# level (`from .host_tool_glue import ...`), which is in turn imported at
-# MAIN.PY'S module level -- so an eager `from amplifier_core import
-# ToolResult` here broke `import muxplex.main` entirely (not merely the
-# embedded-agent feature) in any environment that hasn't installed the
-# extra, e.g. a plain `uv sync --extra dev` (CI's own recipe, and every
-# fresh PyPI/git install before `ensure_agent()` has run). Every use below
-# is therefore either type-checking-only (`ToolResult`, via TYPE_CHECKING
-# -- never evaluated at runtime thanks to `from __future__ import
-# annotations` above) or imported lazily inside the one function that
-# actually constructs it (`HookResult`, in `mount_host_tool_hook`) --
-# mirroring runner.py's own documented lazy-import convention for the same
-# reason.
-if TYPE_CHECKING:
-    from amplifier_core import ToolResult
-
-logger = logging.getLogger("muxplex.agent_embedded.host_tool_glue")
-
-_TOOL_PRE_EVENT = "tool:pre"
-_HOST_TOOL_CALL_EVENT_TYPE = "tool_calls/delta"
+_STRING = {"type": "string"}
+_SESSION = {"type": "string", "description": "Exact tmux session name to make active."}
+_KEYS = [
+    "Enter",
+    "Escape",
+    "Tab",
+    "C-c",
+    "C-d",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "PageUp",
+    "PageDown",
+]
 
 
-class HostToolYield(BaseException):
-    """Raised by ``HostToolProxy.execute()`` to hand control back to the
-    browser. See module docstring for why detection uses the yield_state
-    side channel rather than ``except HostToolYield``."""
-
-    def __init__(
-        self, *, tool_call_id: str, name: str, arguments: dict[str, Any]
-    ) -> None:
-        super().__init__(f"host-tool yield: {name} (tool_call_id={tool_call_id})")
-        self.tool_call_id = tool_call_id
-        self.name = name
-        self.arguments = arguments
-
-
-class HostToolProxy:
-    """Placeholder ``Tool`` for one browser-declared host tool.
-
-    Constructed per-request from one entry of the wire's ``tools[]``
-    (already unwrapped by ``message_shape.extract_host_tools``). Its
-    ``execute()`` is unconditional: raise ``HostToolYield``. The wire-shape
-    ``tool_calls/delta`` chunk itself is emitted by the hook below, from
-    ``tool:pre`` -- BEFORE this proxy runs -- so the SSE stream already
-    carries the tool call by the time the raise propagates.
-    """
-
-    def __init__(
-        self, *, name: str, description: str, parameters: dict[str, Any]
-    ) -> None:
-        self._name = name
-        self._description = description
-        self._parameters = parameters
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def description(self) -> str:
-        return self._description
-
-    @property
-    def input_schema(self) -> dict[str, Any]:
-        return self._parameters
-
-    async def execute(self, input_data: Any) -> ToolResult:
-        arguments: dict[str, Any]
-        if isinstance(input_data, dict):
-            arguments = input_data
-        elif isinstance(input_data, str):
-            try:
-                arguments = json.loads(input_data) if input_data else {}
-            except json.JSONDecodeError:
-                arguments = {"_raw": input_data}
-        else:
-            arguments = {"_raw": str(input_data)}
-
-        logger.debug("HostToolProxy.execute() raising HostToolYield for %r", self._name)
-        raise HostToolYield(tool_call_id="", name=self._name, arguments=arguments)
-
-
-async def mount_host_tool_hook(
-    coordinator: Any, config: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    """Register the ``tool:pre`` hook that emits a ``tool_calls/delta``
-    display event for each browser-declared host tool the model picks, and
-    writes the ``yield_state`` side-channel dict the caller reads AFTER
-    ``session.execute()`` returns (see ``HostToolYield``'s docstring).
-
-    ``config["host_tools"]``: tool-name strings to treat as host-delegated.
-    ``config["yield_state"]``: dict written to on yield -- keys ``yielded``
-    (bool), ``tool_name`` (str), ``tool_call_id`` (str).
-    """
-    # Lazy: see module note above -- this is the one place in this file that
-    # actually constructs a HookResult at runtime.
-    from amplifier_core.models import HookResult
-
-    config = config or {}
-    host_tools = frozenset(config.get("host_tools") or [])
-    yield_state = config.get("yield_state")
-
-    async def _on_tool_pre(event: str, data: dict[str, Any]) -> HookResult:
-        tool_name = data.get("tool_name", "")
-        if tool_name not in host_tools:
-            return HookResult(action="continue")
-
-        tool_call_id = data.get("tool_call_id", "") or ""
-        tool_input = data.get("tool_input")
-        if isinstance(tool_input, str):
-            arguments_str = tool_input
-        elif tool_input is None:
-            arguments_str = "{}"
-        else:
-            try:
-                arguments_str = json.dumps(tool_input, separators=(",", ":"))
-            except (TypeError, ValueError):
-                arguments_str = "{}"
-
-        emit = (
-            coordinator.get_capability("display.emit")
-            if hasattr(coordinator, "get_capability")
-            else None
-        )
-        if emit is None:
-            logger.warning(
-                "mount_host_tool_hook: no display.emit capability registered; "
-                "tool_calls delta for %r will be missing on the wire",
-                tool_name,
-            )
-        else:
-            try:
-                await emit(
-                    {
-                        "type": _HOST_TOOL_CALL_EVENT_TYPE,
-                        "tool_call_id": tool_call_id,
-                        "name": tool_name,
-                        "arguments": arguments_str,
-                        # Parallel index is always 0 -- matches the sidecar's
-                        # own known limitation. chat.js's index:id keying
-                        # (frontend/chat.js) already works around this; not
-                        # "fixed" here -- out of scope for this pass.
-                        "index": 0,
-                    }
-                )
-            except Exception:
-                logger.warning(
-                    "mount_host_tool_hook: display.emit raised for %r",
-                    tool_name,
-                    exc_info=True,
-                )
-
-        if isinstance(yield_state, dict):
-            yield_state["yielded"] = True
-            yield_state["tool_name"] = tool_name
-            yield_state["tool_call_id"] = tool_call_id
-
-        return HookResult(action="continue")
-
-    coordinator.hooks.register(
-        event=_TOOL_PRE_EVENT,
-        handler=_on_tool_pre,
-        priority=50,
-        name="host-tool-emit",
-    )
-
-    return {
-        "name": "host-tool-hook",
-        "version": "0.1.0",
-        "host_tools_count": len(host_tools),
+def _schema(properties: dict, required: list[str] | None = None) -> dict:
+    result = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
     }
+    if required:
+        result["required"] = required
+    return result
+
+
+TOOL_SPECS = [
+    {
+        "name": "list_muxplex_sessions",
+        "description": (
+            "List tmux sessions across the WHOLE federation -- this device "
+            "plus any configured peer devices reachable over the federation "
+            "link, not just this one (name, last activity, current working "
+            "directory). EVERY entry is tagged with deviceId/deviceName so "
+            "you always know which physical machine a session is on -- a "
+            "session never has to be assumed local. remoteId is null for a "
+            "session on THIS device, and the peer's device id otherwise. A "
+            "peer that's offline or misconfigured shows up as its own status "
+            'entry (e.g. status: "unreachable"/"auth_failed") instead of '
+            "session data -- report that plainly rather than treating it as a "
+            'tool failure. This is the ONE tool for "what sessions do I '
+            'have"/"what\'s running" style questions, local or fleet-wide -- '
+            "always call this first, never assume there is a separate "
+            "local-only listing to reach for."
+        ),
+        "input_schema": _schema({}),
+    },
+    {
+        "name": "get_muxplex_session_details",
+        "description": (
+            "Get one specific tmux session's recent pane content (its actual "
+            "captured terminal output/scrollback) plus metadata (last activity, "
+            "created time, working directory, pending follow-ups). Use this "
+            "whenever the user asks what's happening/showing/printing/running "
+            "INSIDE a named session, or wants to see its output or logs -- "
+            "works for a session on THIS device or on any federated peer "
+            "device, transparently. If you don't already know the exact "
+            "session name, call list_muxplex_sessions first to look it up -- "
+            "don't guess it. You normally do NOT need to pass device_id: this "
+            "tool finds the right device on its own. Only pass device_id "
+            "(the deviceId tag list_muxplex_sessions showed you) when you "
+            "already know the session lives on a specific peer, or after a "
+            "prior call came back reporting the same session name exists on "
+            "more than one device and asking you to disambiguate -- never "
+            "guess between them."
+        ),
+        "input_schema": _schema(
+            {
+                "session_name": {
+                    **_STRING,
+                    "description": "Exact tmux session name, e.g. one returned by list_muxplex_sessions.",
+                },
+                "lines": {
+                    "type": "integer",
+                    "description": "How many lines of recent pane scrollback to return (1-2000). Omit to use the server's default window.",
+                },
+                "device_id": {
+                    **_STRING,
+                    "description": "Optional. The deviceId this session lives on, from list_muxplex_sessions' deviceId/remoteId tags. Omit for the common case -- the tool locates the session automatically. Only needed to disambiguate when the same session name exists on more than one federated device.",
+                },
+            },
+            ["session_name"],
+        ),
+    },
+    {
+        "name": "switch_muxplex_session",
+        "description": (
+            "Switch the dashboard's active tmux session -- the same effect as "
+            "the user clicking that session's tile to open it (ensures a live "
+            "terminal exists for it, then makes it the focused/active "
+            "session). Use when the user asks to switch to, open, focus, or "
+            "go to a named session. LOCAL-ONLY: only works for a session on "
+            "THIS device (unlike list_muxplex_sessions and "
+            "get_muxplex_session_details, this does not proxy to federated "
+            "peers yet) -- if list_muxplex_sessions showed the session on a "
+            "different device (remoteId set), tell the user it must be opened "
+            "from that device's own dashboard rather than calling this tool. "
+            "If you don't already know the exact session name, call "
+            "list_muxplex_sessions first -- don't guess it."
+        ),
+        "input_schema": _schema({"session_name": _SESSION}, ["session_name"]),
+    },
+    {
+        "name": "switch_muxplex_view",
+        "description": (
+            "Change which view filter of sessions is currently active in the "
+            "dashboard -- the same effect as picking a view from the view "
+            "dropdown/sidebar. 'all' shows every visible session; 'hidden' "
+            "shows sessions the user has hidden; any other name must be one "
+            "of the user's own configured views. An invalid name is rejected "
+            "with an error naming the exact current valid list -- retry with "
+            "one of those. Use when the user asks to switch/change/filter the "
+            "view."
+        ),
+        "input_schema": _schema(
+            {
+                "view": {
+                    **_STRING,
+                    "description": 'View name to activate, e.g. "all", "hidden", or a configured view name.',
+                },
+            },
+            ["view"],
+        ),
+    },
+    {
+        "name": "send_muxplex_session_input",
+        "description": (
+            "Type text and/or special keys into a tmux session's terminal, "
+            "exactly as if the user had typed it at the keyboard -- this "
+            "actually runs commands (remote code execution by design). It is "
+            "OFF by default: the muxplex operator must explicitly enable it "
+            "(settings.input_enabled) AND allow-list the specific session "
+            "(settings.input_allowed_sessions) on the server -- a setting only "
+            "changeable by editing a file on disk, never through this or any "
+            "API call. If either is not set for the target session, this call "
+            "fails with the server's real 403 error. Never retry it and never "
+            "imply you can work around it -- but the error text itself tells "
+            "the user how a local operator unblocks it, so relay that instead "
+            'of dead-ending on "not possible". Separately, and even when '
+            "enabled server-side: EVERY call to this tool pauses for an "
+            "explicit human confirmation click in the browser before anything "
+            "is sent -- there is no way to skip, pre-approve, or batch-approve "
+            "this, including within one turn or across repeated calls. If the "
+            "human declines, the call returns a decline error; do not retry "
+            "the same request in this turn -- tell the user it was declined. "
+            "Use only when the user explicitly asks you to type/run/send/press "
+            "something into a named session."
+        ),
+        "input_schema": _schema(
+            {
+                "session_name": {
+                    **_STRING,
+                    "description": "Exact tmux session name to type into.",
+                },
+                "text": {
+                    **_STRING,
+                    "description": "Literal text to type (sent as literal characters, never shell-interpreted).",
+                },
+                "enter": {
+                    "type": "boolean",
+                    "description": "Press Enter after the text, submitting the line. Defaults to true.",
+                },
+                "keys": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": _KEYS},
+                    "description": 'Named special keys to send, in order, after text (e.g. ["C-c"] to interrupt).',
+                },
+            },
+            ["session_name"],
+        ),
+    },
+]
+
+
+def browser_tools(bridge: Any) -> list[Any]:
+    from amplifier_agent import Tool
+
+    tools = []
+    for spec in TOOL_SPECS:
+        # A closure per tool, not a late-bound loop variable.
+        def handler_for(name: str):
+            async def invoke(arguments, context):
+                return await bridge.invoke(name, arguments, context)
+
+            return invoke
+
+        tools.append(
+            Tool(
+                name=spec["name"],
+                description=spec["description"],
+                input_schema=deepcopy(spec["input_schema"]),
+                handler=handler_for(spec["name"]),
+            )
+        )
+    return tools

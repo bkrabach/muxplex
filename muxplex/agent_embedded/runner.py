@@ -1,551 +1,384 @@
 # pyright: reportMissingImports=false
-# amplifier-agent (amplifier_agent_lib / amplifier_agent_cli) is an OPTIONAL
-# dependency -- see pyproject.toml's `agent` extra. Every import of it below
-# is deliberately lazy (inside a function, inside a try/except ImportError)
-# so muxplex runs fine without the extra installed (MUXPLEX_AGENT_MODE=sidecar,
-# or check_available()'s clean error path). pyright can't resolve the module
-# in an environment that hasn't installed the extra -- that's expected here,
-# not a real missing-dependency bug, hence the file-level suppression rather
-# than chasing per-line `# type: ignore` comments through ruff's import
-# reformatting.
-"""Embedded (in-process) amplifier-agent turn runner for muxplex.
+"""Public SDK handles only; a single event pump owns each live turn.
 
-Alongside (not replacing) the sidecar HTTP proxy in ``muxplex/main.py``
-(``agent_chat_completions_proxy``), this module runs one amplifier-agent
-chat turn IN-PROCESS as a Python library call, rather than proxying to a
-separate ``amplifier-agent serve chat-completions`` OS process. Selected
-via ``MUXPLEX_AGENT_MODE`` (default "embedded"; see ``agent_embedded/
-__init__.py``).
-
-The turn-execution shape (per-request provider injection under a lock,
-fresh ``AmplifierSession`` per turn against one process-lifetime
-``PreparedBundle``, queue-drained streaming with a keepalive, host-tool
-yield detection via a side-channel dict) mirrors amplifier-agent's own
-sidecar implementation (``amplifier_agent_http/_session_runner.py`` +
-``routes/chat_completions.py``) closely -- that architecture is proven,
-this module adapts it to run without that package, using only
-``amplifier_agent_lib`` (session/bundle mechanics) and
-``amplifier_agent_cli`` (provider injection), plus this package's own
-ported host-tool glue and wire builders.
-
-THE ONE THING THAT BITES: a continuation turn (``session.execute("")``
-after seeding a ``{role: "tool"}`` result) fails with ``cache_control
-cannot be set for empty text blocks`` unless the Anthropic provider's
-``enable_prompt_caching`` is explicitly ``False``. This is a known,
-filed-upstream bug the sidecar's own deployment already routes around
-(see ``docs/AGENT_CHAT_SIDECAR.md`` \u00a73) -- ``_ENABLE_PROMPT_CACHING``
-below defaults to the same workaround.
+Credential construction is lane A's stable service-wide environment seam.
+Durable SDK storage and muxplex owner/interruption metadata have separate roots.
+No SDK private storage, kernel mounting, or new turns for browser tool results.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-import os
 import uuid
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from typing import Any
 
-from . import wire
-from .host_tool_glue import HostToolProxy, mount_host_tool_hook
-from .message_shape import (
-    extract_host_tools,
-    images_lost_reason,
-    split_history_and_prompt,
-    unsupported_image_reason,
-)
+from . import credentials, wire
+from .bridge import BrowserBridge, validate_result
+from .errors import AgentRequestError
+from .host_tool_glue import browser_tools
+from .message_shape import browser_protocol, turn_input, validate_messages
+from .state import SessionLease
 
-logger = logging.getLogger("muxplex.agent_embedded.runner")
-
-#: Workspace name amplifier-agent uses for its own on-disk state (agent
-#: overlays, per-session transcripts under context-intelligence, etc.).
-#: Analogous to the sidecar's ``AMPLIFIER_AGENT_HTTP_WORKSPACE``.
-_WORKSPACE = os.environ.get("MUXPLEX_AGENT_WORKSPACE", "muxplex-embedded")
-
-#: How often to emit an SSE keepalive comment during silent phases
-#: (extended thinking, multi-step internal tool runs). Matches the
-#: sidecar's own interval (``chat_completions.py``).
-_KEEPALIVE_INTERVAL_SECONDS: float = 3.0
-
+logger = logging.getLogger(__name__)
 _PROVIDER_ID = "anthropic"
-
-#: The model id a turn runs against when the request doesn't name one.
-#:
-#: Extracted from the inline literal that used to sit in
-#: :func:`stream_embedded_chat_completion` because it is not an internal
-#: detail: it is half of a cross-language pair. chat.js sends its own
-#: ``var MODEL`` on every turn, this is what the runner falls back to, and
-#: Settings -> Agent now DISPLAYS one of them as "the model you are talking
-#: to". If the two literals drift, the panel shows a model the turn does
-#: not use -- a confidently-wrong label, which is worse than no label at
-#: all. ``tests/test_agent_active_target.py`` pins them equal, the same
-#: cross-language seam ``AGENT_NOT_CONFIGURED_ERROR_TYPE`` (muxplex-at9)
-#: established one commit earlier.
 _DEFAULT_MODEL_ID = "claude-sonnet-5"
-
-#: A workaround for a filed upstream bug (see module docstring), NOT a
-#: preference -- mirrors the sidecar's own host-config
-#: (``docs/AGENT_CHAT_SIDECAR.md`` \u00a73: ``enable_prompt_caching: false``).
-#: Re-check whether it's still needed before flipping this default.
-_ENABLE_PROMPT_CACHING = os.environ.get(
-    "MUXPLEX_AGENT_ENABLE_PROMPT_CACHING", "false"
-).strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-
-# Guards the one-time PreparedBundle build (see _get_prepared).
-_prepared_lock = asyncio.Lock()
-# Guards the per-request mount_plan["providers"] swap + create_session
-# sequence, mirroring _session_runner.py's _create_session_lock: mount_plan
-# is shared, process-wide state, mutated transiently for one create_session
-# call.
-_create_session_lock = asyncio.Lock()
-_prepared: Any = None
-
-
-#: What a user is told when amplifier-agent isn't installed here.
-#:
-#: USER-FACING, not a log line: ``credentials.full_status()`` returns this
-#: verbatim as ``message`` for ``state: "not_installed"``, and chat.js's
-#: ``_renderAgentCredentialStatus`` prints it as the PRIMARY line in
-#: Settings -> Agent. muxplex-at9 is precisely about internals being
-#: rendered at users (the original report leaked ``sudo: unknown user
-#: aa-svc`` there), so this sentence has to survive being read by someone
-#: who has never heard of a Python environment.
-#:
-#: It also has to be TRUE. The text this replaced advised ``pip install
-#: amplifier-agent`` and ``MUXPLEX_AGENT_MODE=sidecar``; neither can work.
-#: amplifier-agent is deliberately source-only -- pyproject.toml's
-#: ``[tool.uv.sources]``: "NOT published on PyPI ... there is no registry
-#: copy to fall back to" -- so pip has nothing to fetch. And the sidecar
-#: path was removed: ``is_embedded_mode()`` has zero callers in main.py,
-#: so that variable changes nothing at all. ``muxplex ensure-agent``
-#: (cli.py's ``ensure_agent()``, registered as a real subcommand) is the
-#: one command that actually closes this gap.
-#:
-#: The technical cause (which import failed, and why) is not discarded --
-#: it goes to the server log via ``_get_prepared`` below, where an
-#: operator can find it, and it stays on the exception chain.
+_KEEPALIVE_INTERVAL_SECONDS = 3.0
+_DRAIN_SECONDS = 8.0
 LIBRARY_MISSING_MESSAGE = (
     "The Agent isn't installed on this server yet. Whoever runs muxplex can "
     "install it with: muxplex ensure-agent"
 )
-
-
-class EmbeddedAgentUnavailable(RuntimeError):
-    """amplifier-agent isn't importable in this Python environment."""
-
-
-async def _get_prepared() -> Any:
-    """Build (once) and cache the PreparedBundle for this process's
-    lifetime, mirroring the sidecar lifespan's one-bundle pattern."""
-    global _prepared
-    if _prepared is not None:
-        return _prepared
-    async with _prepared_lock:
-        if _prepared is None:
-            try:
-                # amplifier-agent is an OPTIONAL dependency (see pyproject.toml's
-                # `agent` extra) -- pyright can't resolve it in an environment
-                # that hasn't installed the extra, and that's the point: this
-                # import is deliberately lazy so muxplex runs fine without it
-                # (MUXPLEX_AGENT_MODE=sidecar, or check_available()'s error path).
-                from amplifier_agent_lib import __version__ as aaa_version
-                from amplifier_agent_lib._runtime import prepare_bundle_for_session
-                from amplifier_agent_lib.bundle.cache import load_and_prepare_cached
-            except ImportError as exc:
-                # The operator's copy of the detail. LIBRARY_MISSING_MESSAGE
-                # is what a USER sees; this is the "which import, and why"
-                # an operator needs, kept out of the UI on purpose
-                # (muxplex-at9's second defect was raw subprocess stderr
-                # reaching a user-facing surface).
-                logger.warning(
-                    "embedded agent unavailable: amplifier-agent is not importable "
-                    "in this environment (%s). Install it with `muxplex ensure-agent`.",
-                    exc,
-                )
-                raise EmbeddedAgentUnavailable(LIBRARY_MISSING_MESSAGE) from exc
-            prepared = await load_and_prepare_cached(aaa_version=aaa_version)
-            prepare_bundle_for_session(prepared, host_config={}, workspace=_WORKSPACE)
-            _prepared = prepared
-    return _prepared
+_runs: dict[str, LiveRun] = {}
 
 
 def active_provider() -> str:
-    """Return the provider short-name the embedded runner actually mounts
-    for a turn (currently always ``"anthropic"`` -- see ``_PROVIDER_ID``
-    above; multi-provider selection is out of scope for this pass).
-
-    Exposed as a function (not a bare module constant re-export) so
-    ``credentials.py``'s status/gating logic depends on the runner's OWN
-    notion of "the provider that matters", rather than a second copy of
-    the same string living in a sibling file.
-    """
     return _PROVIDER_ID
 
 
 def default_model() -> str:
-    """Return the model id a turn runs against when the request doesn't
-    name one (see ``_DEFAULT_MODEL_ID``).
-
-    Sibling of :func:`active_provider`, exposed for the same reason: so
-    ``credentials.full_status()`` reports the runner's OWN notion of what
-    a turn will use, rather than a second copy of the string living in a
-    file that never runs a turn.
-
-    NOT a claim that every turn uses this model -- a request may override
-    it (``body["model"]``), and chat.js always does. It is the server's
-    answer to "what would I run right now, absent instruction", which is
-    the only model question a server can answer honestly on its own.
-    """
     return _DEFAULT_MODEL_ID
 
 
 async def library_unavailable_reason() -> str | None:
-    """Return ``None`` if amplifier-agent is importable (and its bundle
-    preparable) in this process, or a human-readable reason it is not.
-
-    Split out of :func:`check_available` so callers that only need to
-    distinguish "the library itself isn't usable" from "the library is
-    fine but no credential is configured" (the Settings -> Agent status
-    endpoint; see ``credentials.full_status``) don't have to duplicate
-    this try/except.
-    """
     try:
-        await _get_prepared()
-    except EmbeddedAgentUnavailable as exc:
-        return str(exc)
+        from amplifier_agent import (
+            AgentOptions,
+            SessionOptions,
+            TurnInput,
+            create_agent,
+        )
+
+        # Public surface inspection only, no bundle activation or agent creation.
+        if not all((AgentOptions, SessionOptions, TurnInput, create_agent)):
+            return LIBRARY_MISSING_MESSAGE
+    except (ImportError, OSError):
+        return LIBRARY_MISSING_MESSAGE
     return None
-
-
-def _no_credential_message(provider: str, env_var: str | None) -> str:
-    """Build the "nothing resolvable" message for *provider*, naming BOTH
-    halves of the resolution chain (env var AND the credentials file) so
-    the message stays accurate now that embedded mode has a durable
-    fallback store -- see ``credentials.py``'s module docstring.
-    """
-    from amplifier_agent_lib.persistence import amplifier_agent_home
-
-    creds_path = amplifier_agent_home() / "credentials.json"
-    env_clause = f"{env_var} unset" if env_var else "no environment variable set"
-    return (
-        f"amplifier-agent embedded mode: no {provider} credential resolvable "
-        f"({env_clause}, and none stored at {creds_path}). Set one via "
-        "Settings -> Agent, or export the environment variable."
-    )
 
 
 async def check_available() -> str | None:
-    """Return ``None`` if the embedded path is ready to run a turn, or a
-    human-readable reason it is not (missing library / missing
-    credential). Call this BEFORE opening the SSE stream so an
-    unavailable embedded path returns a clean JSON error response instead
-    of a stream that immediately emits an error frame.
-    """
     reason = await library_unavailable_reason()
     if reason:
         return reason
-
-    from amplifier_agent_cli.provider_sources import resolve_credential_detailed
-
-    resolution = resolve_credential_detailed(_PROVIDER_ID)
-    if not resolution.resolved:
-        return _no_credential_message(_PROVIDER_ID, resolution.env_var)
+    status = credentials.resolve_status(_PROVIDER_ID)
+    if status["source"] == "not_set":
+        return (
+            f"No {_PROVIDER_ID} credential is configured. Set one via Settings -> Agent "
+            f"or export {status.get('env_var') or 'the provider environment variable'}."
+        )
     return None
+
+
+class LiveRun:
+    def __init__(
+        self, *, owner: str, session_id: str, model: str, browser: bool
+    ) -> None:
+        self.run_id = uuid.uuid4().hex
+        self.session_id = session_id
+        self.owner = owner
+        self.model = model
+        self.browser = browser
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self.bridge = (
+            BrowserBridge(owner, session_id, self.run_id, self.queue)
+            if browser
+            else None
+        )
+        self.lease: SessionLease | None = None
+        self.agent: Any = None
+        self.session: Any = None
+        self.turn: Any = None
+        self.pump: asyncio.Task | None = None
+        self.terminal: Any = None
+        self.pump_error: Exception | None = None
+        self.closed = False
+        self.closing = False
+        self.cleanup_task: asyncio.Task | None = None
+        self.prepared = asyncio.Event()
+        self.prepared.set()  # manual/test LiveRuns have no in-flight admission
+
+    @property
+    def headers(self) -> dict[str, str]:
+        return {
+            "X-Muxplex-Agent-Session-Id": self.session_id,
+            "X-Muxplex-Agent-Run-Id": self.run_id,
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        }
+
+    async def _pump(self) -> None:
+        """The ONLY consumer of turn.events(), including during cancellation."""
+        try:
+            previous = 0
+            async for event in self.turn.events():
+                if (
+                    event.session_id != self.turn.info.session_id
+                    or event.turn_id != self.turn.info.turn_id
+                    or event.sequence != previous + 1
+                    or event.contract_version != "turn-events/1"
+                    or self.terminal is not None
+                ):
+                    raise AgentRequestError(
+                        "invalid_event_stream",
+                        "Agent event identity/order is invalid.",
+                        "Start a new conversation.",
+                        502,
+                    )
+                previous = event.sequence
+                if event.type == "terminal":
+                    self.terminal = event.payload
+                if not self.closing:
+                    self.queue.put_nowait(event)
+        except Exception as exc:
+            self.pump_error = exc
+        finally:
+            self.queue.put_nowait(None)
+
+    async def stream(self) -> AsyncGenerator[bytes, None]:
+        chunk_id = wire.new_chunk_id()
+        usage = None
+        try:
+            yield wire.sse_data(wire.role_chunk(chunk_id, self.model))
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        self.queue.get(), _KEEPALIVE_INTERVAL_SECONDS
+                    )
+                except TimeoutError:
+                    yield wire.sse_keepalive()
+                    continue
+                if event is None:
+                    break
+                if isinstance(event, dict):
+                    # Only callback invocation produces capability frames.
+                    yield wire.sse_data(event)
+                elif event.type == "output_delta":
+                    text = "".join(part.text for part in event.payload.content)
+                    if text:
+                        yield wire.sse_data(
+                            wire.content_delta_chunk(chunk_id, self.model, text)
+                        )
+                elif event.type == "usage":
+                    usage = event.payload.snapshot  # full cumulative replacement
+                # tool_call/tool_result/approvals/progress are observations only.
+            if self.pump_error is not None:
+                yield wire.sse_data(wire.public_error(self.pump_error))
+                return
+            result = self.terminal
+            if result is None:
+                yield wire.sse_data(
+                    wire.error_envelope(
+                        "incomplete_turn",
+                        "Agent stream ended without a terminal result.",
+                        "Start a new conversation; do not retry uncertain effects.",
+                    )
+                )
+                return
+            if result.state != "success":
+                if result.error is not None:
+                    yield wire.sse_data(wire.public_error(result.error))
+                else:
+                    yield wire.sse_data(
+                        wire.error_envelope(
+                            f"turn_{result.state}",
+                            f"Agent turn {result.state}.",
+                            "Start a new conversation; do not retry uncertain effects.",
+                        )
+                    )
+                return
+            yield wire.sse_data(
+                wire.stop_chunk(chunk_id, self.model, usage=result.usage or usage)
+            )
+            yield wire.sse_done()
+        finally:
+            # ASGI disconnect cancels this generator, not the event pump. Shield
+            # cleanup so the existing pump drains cancellation pairs/terminal.
+            cleanup = asyncio.create_task(self.close())
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+                raise
+
+    async def close(self) -> None:
+        if self.cleanup_task is None:
+            self.closing = True
+            if self.bridge is not None:
+                self.bridge.close()
+            self.cleanup_task = asyncio.create_task(self._cleanup())
+        # SDK v0.20.0 deliberately defers cancellation in close/cancel. A
+        # wait_for timeout would itself wait indefinitely for that deferral.
+        # Supervise instead: do NOT cancel/abandon handles or release a lease
+        # while cleanup still owns them. A slow run remains quarantined.
+        done, _ = await asyncio.wait({self.cleanup_task}, timeout=_DRAIN_SECONDS)
+        if done:
+            self.cleanup_task.result()
+        else:
+            logger.warning("agent cleanup still active; session remains quarantined")
+
+    async def _cleanup(self) -> None:
+        try:
+            # Shutdown may close a run during awaited Agent/Session creation.
+            # Keep the lease/registry and own every handle that admission returns.
+            await self.prepared.wait()
+            if self.turn is not None and self.terminal is None:
+                with contextlib.suppress(Exception):
+                    await self.turn.cancel()
+            if self.pump is not None:
+                await self.pump
+        finally:
+            for handle in (self.session, self.agent):
+                if handle is not None:
+                    try:
+                        await handle.close()
+                    except Exception:
+                        logger.warning("agent handle close failed (details withheld)")
+            # Even terminal may report a FAILED durable commit (including
+            # cancelled + persistence_error). Keep the marker until the NEXT
+            # freshly resumed public history proves that exact turn persisted.
+            if self.lease is not None:
+                self.lease.close()
+            self.closed = True
+            _runs.pop(self.run_id, None)
+
+
+async def prepare_chat(body: dict[str, Any], *, owner: str = "") -> LiveRun:
+    """Prepare headers/session before SSE; register run before callbacks exist."""
+    browser = browser_protocol(body)
+    messages = validate_messages(body, browser=browser)
+    if browser and not owner:
+        raise AgentRequestError(
+            "operator_cookie_required",
+            "Browser tools require a verified operator session cookie.",
+            "Sign in to muxplex in this browser.",
+            403,
+        )
+    from amplifier_agent import AgentOptions, SessionOptions
+
+    model = body.get("model") or _DEFAULT_MODEL_ID
+    prior = body["muxplex_agent"].get("session_id") if browser else None
+    session_id = prior or uuid.uuid4().hex
+    run = LiveRun(owner=owner, session_id=session_id, model=model, browser=browser)
+    run.prepared.clear()
+    _runs[run.run_id] = run
+    try:
+        root = credentials.credential_home()
+        if browser:
+            run.lease = SessionLease(
+                root / "muxplex-browser-state", session_id, owner, new=not prior
+            )
+        options = AgentOptions(
+            provider=active_provider(),
+            model=model,
+            instructions=(
+                "You are a muxplex dashboard assistant. Browser tools run with the "
+                "logged-in user's existing authority. Terminal input requires the "
+                "browser's exact-action confirmation and server input fences. "
+                "Never repeat declined, refused, or uncertain terminal effects."
+            ),
+            tools=browser_tools(run.bridge) if browser else [],
+            skills=[],
+            mcp_servers=[],
+            approvals="allow",  # callbacks only; effect confirmation stays browser-side
+            tool_error_policy="continue",
+            storage=root / "muxplex-sdk",
+        )
+        run.agent = await credentials.create_agent_with_credentials(options)
+        if run.closing:
+            raise AgentRequestError(
+                "run_closing",
+                "Agent admission was interrupted by shutdown.",
+                "Start a new conversation after restart.",
+                503,
+            )
+        if prior:
+            try:
+                run.session = await run.agent.resume_session(session_id)
+            except Exception as exc:
+                if run.lease is not None and run.lease.data.get("run") is not None:
+                    raise AgentRequestError(
+                        "session_interrupted",
+                        "The prior turn cannot be reconciled through public SDK history.",
+                        "Start a new conversation; do not replay an uncertain terminal effect.",
+                        409,
+                    ) from exc
+                raise
+            if run.lease is not None:
+                run.lease.reconcile(run.session.history)
+        else:
+            run.session = await run.agent.create_session(
+                SessionOptions(
+                    session_id=session_id,
+                    persistence="durable" if browser else "ephemeral",
+                    model=model,
+                )
+            )
+        if run.closing:
+            raise AgentRequestError(
+                "run_closing",
+                "Agent admission was interrupted by shutdown.",
+                "Start a new conversation after restart.",
+                503,
+            )
+        if run.lease is not None:
+            run.lease.mark(run.run_id)
+        run.turn = await run.session.start_turn(
+            turn_input(
+                messages, model, browser=browser, context=body.get("context", "")
+            )
+        )
+        run.pump = asyncio.create_task(run._pump())
+        if run.lease is not None:
+            run.lease.mark(run.run_id, run.turn.info.turn_id)
+        run.prepared.set()
+        if run.closing:
+            raise AgentRequestError(
+                "run_closing",
+                "Agent admission was interrupted by shutdown.",
+                "Start a new conversation after restart.",
+                503,
+            )
+        return run
+    except BaseException:
+        run.prepared.set()
+        await run.close()
+        raise
+
+
+def submit_browser_result(body: Any, *, owner: str) -> None:
+    body = validate_result(body)
+    run = _runs.get(body["run_id"])
+    if run is None or run.bridge is None:
+        raise AgentRequestError(
+            "run_closed",
+            "Agent run is closed or unknown.",
+            "Do not retry uncertain effects.",
+            410,
+        )
+    run.bridge.resolve(body, owner)
+
+
+async def shutdown() -> None:
+    await asyncio.gather(
+        *(run.close() for run in list(_runs.values())), return_exceptions=True
+    )
 
 
 async def stream_embedded_chat_completion(
     body: dict[str, Any], *, client_session_id: str = ""
 ) -> AsyncGenerator[bytes, None]:
-    """Run one amplifier-agent turn in-process and yield raw SSE bytes.
-
-    Wire-identical to what ``agent_chat_completions_proxy``'s relay has
-    always forwarded from the sidecar. Any tool the model picks from
-    ``body["tools"]`` is host-delegated (``HostToolProxy``): amplifier
-    never executes it; the browser does, over its own ``/api/*`` fetch
-    calls, and re-POSTs the result as a ``{role: "tool"}`` continuation
-    turn -- the same recursive ``runTurn()`` chat.js has always used
-    against the sidecar.
-    """
-    chunk_id = wire.new_chunk_id()
-    model_id = body.get("model") or _DEFAULT_MODEL_ID
-
-    # Defense in depth: main.py's route handler already calls
-    # check_available() before opening the stream, but a race (library
-    # uninstalled, credential revoked between the check and this call) is
-    # cheap to guard here too -- as a graceful in-stream error rather than
-    # a crash.
-    try:
-        prepared = await _get_prepared()
-    except EmbeddedAgentUnavailable as exc:
-        yield wire.sse_error(str(exc)).encode()
-        return
-
-    from amplifier_agent_cli.provider_sources import (
-        inject_provider,
-        resolve_credential_detailed,
-    )
-    from amplifier_agent_lib.bundle.hook_streaming import mount as mount_streaming_hook
-    from amplifier_agent_lib.protocol_points.defaults_http import (
-        HttpAutoApprovalSystem,
-        HttpQueueDisplaySystem,
-    )
-
-    resolution = resolve_credential_detailed(_PROVIDER_ID)
-    if not resolution.resolved:
-        yield wire.sse_error(
-            _no_credential_message(_PROVIDER_ID, resolution.env_var)
-        ).encode()
-        return
-
-    messages = body.get("messages") or []
-
-    # muxplex-1i9: refuse an image the provider cannot carry BEFORE any
-    # session exists. The Anthropic provider's user-message loop discards
-    # an unrecognised content-block with no error and no log line (see
-    # message_shape.normalize_image_part), so an unsupported attachment
-    # that got this far would produce a confident answer about an image
-    # the model never saw. Checked on the RAW client messages, ahead of
-    # normalization, because normalization is what drops them.
-    unsupported = unsupported_image_reason(messages)
-    if unsupported:
-        logger.warning("embedded runner: %s", unsupported)
-        yield wire.sse_error(unsupported).encode()
-        return
-
-    history, prompt = split_history_and_prompt(messages)
-    host_tool_specs = extract_host_tools(body.get("tools"))
-
-    event_queue: asyncio.Queue[Any] = asyncio.Queue()
-    display = HttpQueueDisplaySystem(event_queue)
-    yield_state: dict[str, Any] = {
-        "yielded": False,
-        "tool_name": "",
-        "tool_call_id": "",
-    }
-
-    sid = f"muxplex-embedded-{(client_session_id or uuid.uuid4().hex[:12])}"
-
-    # Per-request provider injection + session creation, under the lock --
-    # mount_plan["providers"] is shared, process-wide state (see
-    # _create_session_lock's docstring above).
-    async with _create_session_lock:
-        saved_providers = list(prepared.mount_plan.get("providers") or [])
-        prepared.mount_plan["providers"] = []
-        inject_provider(
-            prepared,
-            _PROVIDER_ID,
-            model_override=model_id,
-            extra_config={"enable_prompt_caching": _ENABLE_PROMPT_CACHING},
+    """Compatibility entry for ordinary stateless clients (never browser tools)."""
+    del client_session_id  # legacy caller-supplied IDs grant no durable ownership
+    if browser_protocol(body):
+        raise AgentRequestError(
+            "operator_cookie_required",
+            "Browser runs require HTTP cookie verification.",
+            "Sign in.",
+            403,
         )
-        try:
-            session = await prepared.create_session(
-                session_id=sid, session_cwd=Path.cwd(), is_resumed=False
-            )
-        finally:
-            prepared.mount_plan["providers"] = saved_providers
-
-    session.coordinator.register_capability("display.emit", display.emit)
-    session.coordinator.register_capability(
-        "approval.request", HttpAutoApprovalSystem().request
-    )
-    await mount_streaming_hook(session.coordinator, {})
-
-    host_tool_names: list[str] = []
-    if host_tool_specs:
-        for spec in host_tool_specs:
-            proxy = HostToolProxy(
-                name=spec["name"],
-                description=spec["description"],
-                parameters=spec["parameters"],
-            )
-            await session.coordinator.mount("tools", proxy, name=proxy.name)
-            host_tool_names.append(proxy.name)
-        await mount_host_tool_hook(
-            session.coordinator,
-            {"host_tools": host_tool_names, "yield_state": yield_state},
-        )
-        logger.info(
-            "embedded runner: host-tool delegation enabled: %d tool(s) -- %s",
-            len(host_tool_names),
-            host_tool_names,
-        )
-
-    if history:
-        context_module = session.coordinator.get("context")
-        can_seed = context_module is not None and hasattr(
-            context_module, "set_messages"
-        )
-        # muxplex-1i9: history seeding is the ONLY path an attachment can
-        # travel (session.execute() takes a str -- see message_shape's
-        # split_history_and_prompt). If it is unavailable AND this turn
-        # carries images, refuse out loud instead of running a turn whose
-        # answer would be about an image the model was never shown. With
-        # no images this stays exactly as tolerant as it always was.
-        refusal = images_lost_reason(history, can_seed=can_seed)
-        if refusal:
-            logger.error("embedded runner: %s", refusal)
-            yield wire.sse_error(refusal).encode()
-            return
-        if can_seed:
-            # muxplex-lh0: `# pyright: ignore` for a checker defect, NOT for a
-            # real finding. pyright 1.1.411 reports reportOptionalMemberAccess
-            # here ("set_messages" is not a known attribute of "None");
-            # 1.1.408 reports nothing. Same tree, same venv, only the checker
-            # version differs.
-            #
-            # 1.1.411 is the one that is wrong, and provably so. Ask either
-            # version for the type of `context_module` at the
-            # `session.coordinator.get("context")` line above and both
-            # answer `Any` -- amplifier-agent is an optional extra, so
-            # `session` and everything reached through it is unresolved (see
-            # this file's header). `Any` does not contain `None`. Inside
-            # `if can_seed:` -- the branch where `context_module is not None`
-            # has just been proven -- 1.1.408 still says `Any`, while 1.1.411
-            # says `Any | None`. It ADDS the member the guard excluded, on the
-            # branch that excludes it. There is no reading under which that is
-            # a stricter-but-correct analysis; it is an unsound narrowing.
-            #
-            # Minimal reproduction, no muxplex involved:
-            #
-            #     def f(x: Any) -> None:
-            #         g = x is not None and hasattr(x, "m")
-            #         if g:
-            #             reveal_type(x)  # 1.1.408: Any | 1.1.411: Any | None
-            #
-            # It needs all three of: a declared `Any`, the guard aliased to a
-            # local (`g`), and a `hasattr` conjunct. Drop any one -- inline the
-            # condition, or alias `is not None` alone, or alias `hasattr`
-            # alone -- and 1.1.411 agrees with 1.1.408 again. Declare `x` as a
-            # real `M | None` instead and neither version narrows the alias at
-            # all, so this is not pyright tightening up on Optionals; it is a
-            # defect confined to the `Any` + aliased-conjunction path.
-            #
-            # The guard is therefore left exactly as it is (`can_seed` is also
-            # passed to images_lost_reason() above, and restructuring working
-            # runtime code to satisfy a checker bug would trade a real,
-            # untested code path for a cosmetic one). Delete this ignore once
-            # the pinned pyright is one that has fixed the narrowing -- the
-            # reproduction above is how to tell without guessing.
-            await context_module.set_messages(history)  # pyright: ignore[reportOptionalMemberAccess]
-        else:
-            logger.warning(
-                "embedded runner: conversation seeding skipped: context module %r has no set_messages",
-                context_module,
-            )
-
-    async def _run_turn() -> str | None:
-        async with session:
-            return await session.execute(prompt)
-
-    turn_task: asyncio.Task[str | None] = asyncio.create_task(_run_turn())
-
-    # Pre-flight window: give an immediately-failing turn (bad credential
-    # caught downstream, provider rejects at first call, etc.) a brief
-    # chance to fail BEFORE we commit to streaming the role chunk -- once
-    # SSE bytes are on the wire there is no way back to a clean error
-    # response. Mirrors chat_completions.py's "Edit C" pre-flight check.
-    done, _ = await asyncio.wait([turn_task], timeout=0.05)
-    if turn_task in done:
-        exc = turn_task.exception()
-        if exc is not None and not yield_state.get("yielded"):
-            yield wire.sse_error(
-                f"Provider initialization failed: {type(exc).__name__}: {exc}"
-            ).encode()
-            return
-
-    async def _signal_done() -> None:
-        try:
-            await asyncio.shield(turn_task)
-        except BaseException as exc:  # noqa: BLE001 -- intentional: must never crash the watcher
-            logger.debug("embedded runner: turn task ended via %s", type(exc).__name__)
-        finally:
-            display.close()
-
-    signal_task = asyncio.create_task(_signal_done())
-
-    try:
-        yield wire.sse_data(wire.role_chunk(chunk_id, model_id)).encode()
-
-        usage_prompt = usage_completion = usage_cached = 0
-
-        while True:
-            try:
-                event = await asyncio.wait_for(
-                    event_queue.get(), timeout=_KEEPALIVE_INTERVAL_SECONDS
-                )
-            except TimeoutError:
-                yield wire.sse_keepalive().encode()
-                continue
-            if event is None:
-                break  # sentinel -- turn task is done (success, error, or cancel)
-            if (u := wire.extract_usage(event)) is not None:
-                usage_prompt += u.get("prompt_tokens", 0)
-                usage_completion += u.get("completion_tokens", 0)
-                usage_cached += u.get("cached_tokens", 0)
-                continue
-            chunk = wire.translate_event(event, chunk_id, model_id)
-            if chunk is not None:
-                yield wire.sse_data(chunk).encode()
-
-        # Turn task has finished. Surface any exception now. finish_reason
-        # is "tool_calls" if the host-tool hook signalled a yield (see
-        # host_tool_glue.HostToolYield's docstring for why we check the
-        # side-channel dict rather than the exception type).
-        try:
-            await turn_task
-        except asyncio.CancelledError:
-            logger.info(
-                "embedded runner: turn task cancelled (client likely disconnected)"
-            )
-        except Exception as exc:
-            if yield_state.get("yielded"):
-                logger.info(
-                    "embedded runner: turn ended with host-tool yield (wrapped): tool=%s id=%s -- wrapped exception: %s",
-                    yield_state.get("tool_name") or "(unknown)",
-                    yield_state.get("tool_call_id") or "(via hook)",
-                    type(exc).__name__,
-                )
-            else:
-                logger.exception("embedded runner: turn task raised")
-                yield wire.sse_data(
-                    wire.content_delta_chunk(
-                        chunk_id,
-                        model_id,
-                        f"\n\n[amplifier-agent error: {type(exc).__name__}: {exc}]\n",
-                    )
-                ).encode()
-
-        if yield_state.get("yielded"):
-            yield wire.sse_data(
-                wire.tool_calls_stop_chunk(
-                    chunk_id,
-                    model_id,
-                    prompt_tokens=usage_prompt,
-                    completion_tokens=usage_completion,
-                    cached_tokens=usage_cached,
-                )
-            ).encode()
-        else:
-            yield wire.sse_data(
-                wire.stop_chunk(
-                    chunk_id,
-                    model_id,
-                    prompt_tokens=usage_prompt,
-                    completion_tokens=usage_completion,
-                    cached_tokens=usage_cached,
-                )
-            ).encode()
-        yield wire.sse_done().encode()
-    finally:
-        # Cleanup: if the generator is closed before completion (e.g.
-        # client disconnects mid-stream), cancel the turn task and the
-        # watcher.
-        if not turn_task.done():
-            turn_task.cancel()
-        if not signal_task.done():
-            signal_task.cancel()
-        await asyncio.gather(turn_task, signal_task, return_exceptions=True)
+    run = await prepare_chat(body)
+    async for chunk in run.stream():
+        yield chunk
